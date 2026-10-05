@@ -15,7 +15,7 @@ FLASH_SIZE_KB 2048
 env OPTIMIZE -O2
 
 # bootloader takes first sector 128kb
-FLASH_RESERVE_START_KB 32
+FLASH_RESERVE_START_KB 128
 
 define HAL_STORAGE_SIZE 32768
 
@@ -277,7 +277,8 @@ DMA_PRIORITY S*
 
 DMA_NOSHARE SPI1* SPI2* TIM1*
 
-#define AP_BOOTLOADER_FLASHING_ENABLED 0
+# firmware-side bootloader updates off: saves flash, update the bootloader over DFU
+define AP_BOOTLOADER_FLASHING_ENABLED 0
 
 define EK3_FEATURE_POSITION_RESET 1
 #define AP_NETWORKING_BACKEND_PPP 1

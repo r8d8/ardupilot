@@ -1,0 +1,73 @@
+# hw definition file for processing by chibios_hwdef.py
+# for DefDrones H7 Basic V3.1 bootloader
+
+# MCU class and specific type
+MCU STM32H7xx STM32H743xx
+
+# board ID for firmware load, must match hwdef.dat
+APJ_BOARD_ID 9999
+
+# crystal frequency, setup to use external oscillator
+OSCILLATOR_HZ 24000000
+
+FLASH_SIZE_KB 2048
+
+# bootloader starts at zero offset
+FLASH_RESERVE_START_KB 0
+
+# the location where the bootloader will put the firmware
+# the H743 has 128k sectors
+FLASH_BOOTLOADER_LOAD_KB 128
+
+# order of UARTs (and USB). Allow bootloading on USB and telem1
+SERIAL_ORDER OTG1 USART3
+
+PA11 OTG_FS_DM OTG1
+PA12 OTG_FS_DP OTG1
+
+PA13 JTMS-SWDIO SWD
+PA14 JTCK-SWCLK SWD
+
+# USART3 (telem1), with its 5V supply switched on (low enables)
+PD8 USART3_TX USART3 NODMA
+PD9 USART3_RX USART3 NODMA
+PD4 VDD_5V_TELEM1_EN OUTPUT LOW OPENDRAIN
+
+# same supply state as the main firmware
+PE9 VDD_3V3_SENSORS_EN OUTPUT HIGH
+PE12 VDD_5V_PERIPH_EN OUTPUT HIGH
+
+# LEDs are active low
+PB0 LED_BOOTLOADER OUTPUT HIGH # blue, B/E
+PB1 LED_ACTIVITY OUTPUT HIGH   # green, ACT
+define HAL_LED_ON 0
+
+# keep all SPI chip selects high in the bootloader
+PB7 ICM42688_CS CS
+PC0 ICM42688_2_CS CS
+PA4 BMIxx0_CS CS
+PE4 MAX7456_CS CS
+
+# support flashing from SD card:
+
+# FATFS support:
+define CH_CFG_USE_MEMCORE 1
+define CH_CFG_USE_HEAP 1
+define CH_CFG_USE_SEMAPHORES 0
+define CH_CFG_USE_MUTEXES 1
+define CH_CFG_USE_DYNAMIC 1
+define CH_CFG_USE_WAITEXIT 1
+define CH_CFG_USE_REGISTRY 1
+
+# microSD support
+PC8 SDMMC1_D0 SDMMC1
+PC9 SDMMC1_D1 SDMMC1
+PC10 SDMMC1_D2 SDMMC1
+PC11 SDMMC1_D3 SDMMC1
+PC12 SDMMC1_CK SDMMC1
+PD2 SDMMC1_CMD SDMMC1
+
+# enable FAT filesystem support (needs a microSD defined via SDMMC)
+define HAL_OS_FATFS_IO 1
+
+define AP_BOOTLOADER_FLASH_FROM_SD_ENABLED 1
