@@ -144,6 +144,7 @@ def options(opt):
     opt.load('compiler_cxx compiler_c waf_unit_test python')
     opt.load('ardupilotwaf')
     opt.load('build_summary')
+    opt.load('ada')
 
     g = opt.ap_groups['configure']
 
@@ -580,6 +581,7 @@ def configure(cfg):
     cfg.load('littlefs')
     cfg.load('static_linking')
     cfg.load('build_summary')
+    cfg.load('ada')
 
     cfg.start_msg('Benchmarks')
     if cfg.env.HAS_GBENCHMARK:
@@ -942,6 +944,10 @@ def build(bld):
 
     bld.add_group('dynamic_sources')
     _build_dynamic_sources(bld)
+
+    if bld.env.AP_ADA_ENABLED:
+        bld.add_group('ada')
+        bld.ada_fcs()
 
     bld.add_group('build')
     bld.get_board().build(bld)
