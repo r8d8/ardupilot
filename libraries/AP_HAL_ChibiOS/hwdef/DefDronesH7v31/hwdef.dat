@@ -264,11 +264,18 @@ PC13 VDD_BRICK2_VALID INPUT PULLUP #VTX POWER GOOD 			LOW IS FAULT
 
 
 #-----------------------------OSD-------------------------------------
-# setup for OSD
+# OSD over MSP DisplayPort (OSD_TYPE 5, as flown): the Walksnail Avatar
+# goggles draw it with their own fonts, so the MAX7456 fonts are not embedded
 define OSD_ENABLED 1
-define HAL_OSD_TYPE_DEFAULT 1
+define HAL_OSD_TYPE_DEFAULT 5
 define AP_OSD_LINK_STATS_EXTENSIONS_ENABLED 1
-ROMFS_WILDCARD libraries/AP_OSD/fonts/font*.bin
+
+#-----------------------------EXTERNAL AHRS---------------------------
+# MicroStrain 7 protocol only: the HITL bench feeds its simulated IMU this
+# way (clearwater simulation/hitl). Inactive unless EAHRS_TYPE is set.
+define AP_EXTERNAL_AHRS_ENABLED 1
+define AP_EXTERNAL_AHRS_BACKEND_DEFAULT_ENABLED 0
+define AP_EXTERNAL_AHRS_MICROSTRAIN7_ENABLED 1
 
 
 #-----------------------------DMA---------------------------------
