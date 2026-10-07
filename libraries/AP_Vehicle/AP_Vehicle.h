@@ -87,6 +87,7 @@
 #endif
 
 #include <AP_IBus_Telem/AP_IBus_Telem.h>
+#include <AP_Ada/AP_Ada.h>
 
 class AP_DDS_Client;
 
@@ -500,6 +501,10 @@ protected:
 
 #if AP_RPM_ENABLED
     AP_RPM rpm_sensor;
+#endif
+
+#if AP_ADA_ENABLED
+    AP_Ada ada;
 #endif
 
     static const struct AP_Param::GroupInfo var_info[];

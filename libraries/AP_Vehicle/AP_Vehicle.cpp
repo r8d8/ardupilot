@@ -553,6 +553,10 @@ void AP_Vehicle::setup()
 #if AP_IBUS_TELEM_ENABLED
     ibus_telem.init();
 #endif
+
+#if AP_ADA_ENABLED
+    ada.init();
+#endif
 }
 
 void AP_Vehicle::loop()
@@ -698,6 +702,9 @@ const AP_Scheduler::Task AP_Vehicle::scheduler_tasks[] = {
 #endif
 #if AP_ARMING_ENABLED
     SCHED_TASK(update_arming,          1,     50, 253),
+#if AP_ADA_ENABLED
+    SCHED_TASK_CLASS(AP_Ada,       &vehicle.ada,            update,                   10,  50, 254),
+#endif
 #endif
 };
 
