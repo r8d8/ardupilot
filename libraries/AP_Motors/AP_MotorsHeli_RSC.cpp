@@ -224,6 +224,15 @@ const AP_Param::GroupInfo AP_MotorsHeli_RSC::var_info[] = {
 
     // 27 was AROT_IDLE, moved to RSC autorotation sub group
 
+    // @Param: RUNUP_RPM
+    // @DisplayName: Run-up rotor speed
+    // @Description: Measured rotor speed (RPM sensor 1) the rotor must reach before run-up can complete, in addition to RUNUP_TIME. Run-up complete allows automatic take-off and flight modes without manual throttle. Without a valid RPM reading run-up does not complete. Once complete, run-up is not withdrawn on measured rotor speed. 0 disables the check.
+    // @Range: 0 3000
+    // @Units: RPM
+    // @Increment: 1
+    // @User: Advanced
+    AP_GROUPINFO("RUNUP_RPM", 60, AP_MotorsHeli_RSC, _runup_rpm, 0),
+
     AP_GROUPEND
 };
 
@@ -458,10 +467,21 @@ void AP_MotorsHeli_RSC::update_rotor_runup(float dt)
         return;
     }
 
+    // if RUNUP_RPM is set, the measured rotor speed must also have reached it
+    const bool runup_rpm_reached = (_runup_rpm <= 0) || (_rotor_rpm >= _runup_rpm);
+    if (!_runup_complete && (_rotor_ramp_output >= 1.0f) && (_rotor_runup_output >= 1.0f) && !runup_rpm_reached) {
+        if (!_runup_rpm_wait_reported) {
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Runup waiting for rotor speed %.0f/%d RPM", double(_rotor_rpm), int(_runup_rpm.get()));
+            _runup_rpm_wait_reported = true;
+        }
+    } else if (_rotor_runup_output < 1.0f) {
+        _runup_rpm_wait_reported = false;
+    }
+
     // rotor runup complete depends on the use of autothrottle RSC mode and the manual collective flight mode
     // if autothrottle is used and a non-manual collective mode is used, then the governor must be engaged for runup to be complete. Otherwise,
     // runup is complete when the rotor ramp and runup outputs are both at 1.0.  
-    if (!_runup_complete && (_rotor_ramp_output >= 1.0f) && (_rotor_runup_output >= 1.0f) && 
+    if (!_runup_complete && (_rotor_ramp_output >= 1.0f) && (_rotor_runup_output >= 1.0f) && runup_rpm_reached &&
         (_using_manual_collective_mode || _control_mode != ROTOR_CONTROL_MODE_AUTOTHROTTLE || _governor_engage)) {
         // warn user if runup timer completed but governor not engaged when using manual collective mode and autothrottle RSC mode
         if (_using_manual_collective_mode && _control_mode == ROTOR_CONTROL_MODE_AUTOTHROTTLE && _governor_engage == false) {

@@ -140,6 +140,7 @@ private:
     bool            _autothrottle;                // autothrottle status flag
     bool            _governor_fault;              // governor fault status flag
     bool            _spooldown_complete;          // flag for determining if spooldown is complete
+    bool            _runup_rpm_wait_reported;     // run-up waiting for RUNUP_RPM has been reported
     float           _fast_idle_timer;             // cooldown timer variable
     uint8_t         _governor_fault_count;        // variable for tracking governor speed sensor faults
     float           _governor_torque_reference;   // governor reference for load calculations
@@ -170,6 +171,7 @@ private:
     AP_Float        _governor_ff;               // governor feedforward variable
     AP_Float        _governor_range;            // RPM range +/- governor rpm reference setting where governor is operational
     AP_Int16        _cooldown_time;             // cooldown time to provide a fast idle
+    AP_Int16        _runup_rpm;                 // measured rotor speed required for run-up complete, 0 = not used
 
     // parameter accessors to allow conversions
     float       get_critical_speed() const { return _critical_speed * 0.01; }
