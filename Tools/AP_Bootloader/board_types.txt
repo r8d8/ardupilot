@@ -599,5 +599,8 @@ AP_HW_CUAV-X25-EVO_ODID             17002
 AP_HW_SKYDROID-S3_ODID              11300
 AP_HW_CUBEORANGEPLUS_ODID           11063
 
+# private board of the Clearwater fork, not allocated upstream
+AP_HW_DEFDRONES_H7_V31              9999
+
 # do not allocate board IDs above 10,000 for non-ODID boards.
 # do not allocate board IDs above 19,999 in this file.
