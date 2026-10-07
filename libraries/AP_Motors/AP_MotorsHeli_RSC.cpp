@@ -486,7 +486,8 @@ void AP_MotorsHeli_RSC::update_rotor_runup(float dt)
         // warn user if runup timer completed but governor not engaged when using manual collective mode and autothrottle RSC mode
         if (_using_manual_collective_mode && _control_mode == ROTOR_CONTROL_MODE_AUTOTHROTTLE && _governor_engage == false) {
             GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Governor Failed to Engage when Runup Completed");
-        } else {
+        } else if (_aux_fn == SRV_Channel::k_heli_rsc) {
+            // only the main rotor announces it: a DDVP tail runs its own RSC
             GCS_SEND_TEXT(MAV_SEVERITY_NOTICE, "Runup Complete");
         }
         _runup_complete = true;
