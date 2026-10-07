@@ -314,6 +314,22 @@ function EFI_State_ud:general_error() end
 function EFI_State_ud:general_error(value) end
 
 -- get field
+---@return integer
+---| '0' # Stopped
+---| '1' # Starting
+---| '2' # Running
+---| '3' # Fault
+function EFI_State_ud:engine_state() end
+
+-- set field
+---@param state integer
+---| '0' # Stopped
+---| '1' # Starting
+---| '2' # Running
+---| '3' # Fault
+function EFI_State_ud:engine_state(state) end
+
+-- get field
 ---@return uint32_t_ud
 function EFI_State_ud:last_updated_ms() end
 

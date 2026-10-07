@@ -957,6 +957,7 @@ userdata Cylinder_Status field lambda_coefficient float'skip_check read write
 userdata EFI_State depends (AP_EFI_SCRIPTING_ENABLED == 1)
 userdata EFI_State field last_updated_ms uint32_t'skip_check read write
 userdata EFI_State field general_error boolean read write
+userdata EFI_State field engine_state Engine_State'enum read write Engine_State::STOPPED Engine_State::FAULT
 userdata EFI_State field engine_load_percent uint8_t'skip_check read write
 userdata EFI_State field engine_speed_rpm uint32_t'skip_check read write
 userdata EFI_State field spark_dwell_time_ms float'skip_check read write
