@@ -90,11 +90,100 @@ void AP_Ada::update()
 // @Field: Err: largest difference from AP_Math in this interval
     AP::logger().Write("ADA", "TimeUS,N,Rej,Err", "s--o", "F--0", "QIIf",
                        AP_HAL::micros64(), _checks, _rejects, _max_err);
+
+// @LoggerMessage: ADAU
+// @Description: Ada/SPARK UBX parser in shadow, compared with AP_GPS_UBLOX
+// @Field: TimeUS: Time since system startup
+// @Field: PAP: NAV-PVT messages decoded by AP_GPS_UBLOX in this interval
+// @Field: PAda: NAV-PVT messages completed by the Ada parser in this interval
+// @Field: Mat: AP_GPS_UBLOX NAV-PVTs the Ada decode equals
+// @Field: Mis: AP_GPS_UBLOX NAV-PVTs the Ada decode differs from or misses
+// @Field: CkE: frames the Ada parser dropped on a checksum error
+    AP::logger().Write("ADAU", "TimeUS,PAP,PAda,Mat,Mis,CkE", "s-----", "F-----",
+                       "QIIIII", AP_HAL::micros64(), _ubx.ap_pvt, _ubx.ada_pvt,
+                       _ubx.match, _ubx.mismatch, _ubx.ck_errors);
 #endif
 
     _checks = 0;
     _rejects = 0;
     _max_err = 0;
+    _ubx = {};
+}
+
+void AP_Ada::ubx_feed(uint8_t instance, uint8_t byte)
+{
+    if (!_healthy) {
+        return;
+    }
+    uint8_t status = CW_UBX_STATUS_NONE;
+    cw_ubx_feed(instance, byte, &status);
+    if (status == CW_UBX_STATUS_FRAME) {
+        cw_ubx_nav_pvt_t pvt;
+        bool ok = false;
+        cw_ubx_nav_pvt(instance, &pvt, &ok);
+        if (ok) {
+            _ubx.ada_pvt++;
+        }
+    } else if (status == CW_UBX_STATUS_CHECKSUM) {
+        _ubx.ck_errors++;
+    }
+}
+
+void AP_Ada::ubx_reset(uint8_t instance)
+{
+    if (_healthy) {
+        cw_ubx_reset(instance);
+    }
+}
+
+// the Ada parser saw the same bytes first, so its frame must be this NAV-PVT
+void AP_Ada::ubx_check_nav_pvt(uint8_t instance, const cw_ubx_nav_pvt_t &ap)
+{
+    if (!_healthy) {
+        return;
+    }
+    _ubx.ap_pvt++;
+
+    cw_ubx_nav_pvt_t ada;
+    bool ok = false;
+    cw_ubx_nav_pvt(instance, &ada, &ok);
+
+    const char *field = nullptr;
+    if (!ok) {
+        field = "missing";
+    }
+#define CHECK_FIELD(f) else if (ada.f != ap.f) { field = #f; }
+    CHECK_FIELD(itow)
+    CHECK_FIELD(lon)
+    CHECK_FIELD(lat)
+    CHECK_FIELD(height)
+    CHECK_FIELD(h_msl)
+    CHECK_FIELD(h_acc)
+    CHECK_FIELD(v_acc)
+    CHECK_FIELD(vel_n)
+    CHECK_FIELD(vel_e)
+    CHECK_FIELD(vel_d)
+    CHECK_FIELD(g_speed)
+    CHECK_FIELD(head_mot)
+    CHECK_FIELD(s_acc)
+    CHECK_FIELD(head_acc)
+    CHECK_FIELD(p_dop)
+    CHECK_FIELD(valid)
+    CHECK_FIELD(fix_type)
+    CHECK_FIELD(flags)
+    CHECK_FIELD(num_sv)
+#undef CHECK_FIELD
+
+    if (field == nullptr) {
+        _ubx.match++;
+        return;
+    }
+    _ubx.mismatch++;
+    if (!_ubx_mismatch_reported) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: UBX %u NAV-PVT differs: %s",
+                      unsigned(instance), field);
+        _ubx_mismatch_reported = true;
+    }
 }
 
 #endif  // AP_ADA_ENABLED
