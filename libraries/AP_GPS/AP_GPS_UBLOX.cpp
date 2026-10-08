@@ -31,6 +31,7 @@
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include "RTCM3_Parser.h"
+#include <AP_Ada/AP_Ada.h>
 #include <stdio.h>
 
 #ifndef UBLOX_SPEED_CHANGE
@@ -581,6 +582,9 @@ AP_GPS_UBLOX::read(void)
     }
 
     const uint16_t numc = MIN(port->available(), 8192U);
+#if AP_ADA_ENABLED
+    AP_Ada *ada = AP_Ada::get_singleton();
+#endif
     for (uint16_t i = 0; i < numc; i++) {        // Process bytes received
 
         // read the next byte
@@ -590,6 +594,12 @@ AP_GPS_UBLOX::read(void)
         }
 #if AP_GPS_DEBUG_LOGGING_ENABLED
         log_data(&data, 1);
+#endif
+#if AP_ADA_ENABLED
+        // the Ada parser in shadow sees every byte, before this parser does
+        if (ada != nullptr) {
+            ada->ubx_feed(state.instance, data);
+        }
 #endif
 
 #if GPS_MOVING_BASELINE
@@ -601,6 +611,11 @@ AP_GPS_UBLOX::read(void)
                 // chance to send the RTCMv3 packet to another (rover)
                 // GPS
                 _step = 0;
+#if AP_ADA_ENABLED
+                if (ada != nullptr) {
+                    ada->ubx_reset(state.instance);
+                }
+#endif
                 break;
             }
         }
@@ -1674,6 +1689,19 @@ AP_GPS_UBLOX::_parse_gps(void)
         Debug("MSG_PVT");
 
         havePvtMsg = true;
+
+#if AP_ADA_ENABLED
+        // compare with the Ada parser's decode of the same frame
+        if (AP_Ada *ada = AP_Ada::get_singleton()) {
+            const ubx_nav_pvt &p = _buffer.pvt;
+            const cw_ubx_nav_pvt_t ap {
+                p.itow, p.lon, p.lat, p.h_ellipsoid, p.h_msl, p.h_acc, p.v_acc,
+                p.velN, p.velE, p.velD, p.gspeed, p.head_mot, p.s_acc,
+                p.head_acc, p.p_dop, p.valid, p.fix_type, p.flags, p.num_sv
+            };
+            ada->ubx_check_nav_pvt(state.instance, ap);
+        }
+#endif
 
         // if we have PVT we don't want MSG_STATUS
         _unconfigured_messages &= ~CONFIG_RATE_STATUS;
