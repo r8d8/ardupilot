@@ -19,6 +19,7 @@
 #include <AP_Logger/AP_Logger.h>
 
 #include "AP_MotorsHeli_Swash.h"
+#include <AP_Ada/AP_Ada.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -105,6 +106,20 @@ void AP_MotorsHeli_Swash::configure()
     enable.set(_swash_type == SWASHPLATE_TYPE_H3);
 
     calculate_roll_pitch_collective_factors();
+
+#if AP_ADA_ENABLED
+    // the Ada mixer in shadow gets the same parameters
+    if (AP_Ada *ada = AP_Ada::get_singleton()) {
+        const cw_swash_config_t cfg {
+            {_servo1_pos.get(), _servo2_pos.get(), _servo3_pos.get()},
+            _phase_angle.get(),
+            uint8_t(_swashplate_type.get()),
+            uint8_t(_swash_coll_dir.get()),
+            uint8_t(_make_servo_linear ? 1 : 0)
+        };
+        ada->swash_configure(_instance - 1, cfg);
+    }
+#endif
 }
 
 // CCPM Mixers - calculate mixing scale factors by swashplate type
@@ -242,6 +257,15 @@ void AP_MotorsHeli_Swash::calculate(float roll, float pitch, float collective)
         }
 
     }
+
+#if AP_ADA_ENABLED
+    // compare with the Ada mixer, from the same inputs (collective before
+    // reversal: the Ada mixer reverses it itself)
+    if (AP_Ada *ada = AP_Ada::get_singleton()) {
+        ada->swash_check(_instance - 1, _roll_input, _pitch_input, _collective_input_scaled,
+                         _enabled, _output);
+    }
+#endif
 }
 
 // set_linear_servo_out - sets swashplate servo output to be linear
