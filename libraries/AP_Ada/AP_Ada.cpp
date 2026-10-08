@@ -107,12 +107,27 @@ void AP_Ada::update()
                        AP_HAL::micros64(), _ubx.ap_pvt, _ubx.ada_pvt,
                        _ubx.match, _ubx.mismatch, _ubx.ck_errors,
                        _ubx.bytes, _ubx.feed_us, _ubx.feed_max_us);
+
+// @LoggerMessage: ADAS
+// @Description: Ada/SPARK swashplate mixer in shadow, compared with AP_MotorsHeli_Swash
+// @Field: TimeUS: Time since system startup
+// @Field: N: mixes compared in this interval
+// @Field: Rej: inputs the Ada mixer refused
+// @Field: Uns: mixes not compared because the configuration is not supported (linearized servos)
+// @Field: Mis: mixes where a servo output or enable flag differs
+// @Field: Err: largest servo output difference in this interval
+// @Field: Cyc: largest roll or pitch input compared in this interval
+    AP::logger().Write("ADAS", "TimeUS,N,Rej,Uns,Mis,Err,Cyc", "s------", "F------",
+                       "QIIIIff", AP_HAL::micros64(), _swash.checks, _swash.rejects,
+                       _swash.unsupported, _swash.mismatch, _swash.max_err,
+                       _swash.max_cyclic);
 #endif
 
     _checks = 0;
     _rejects = 0;
     _max_err = 0;
     _ubx = {};
+    _swash = {};
 }
 
 void AP_Ada::ubx_feed(uint8_t instance, uint8_t byte)
@@ -138,6 +153,71 @@ void AP_Ada::ubx_feed(uint8_t instance, uint8_t byte)
     _ubx.bytes++;
     _ubx.feed_us += dt;
     _ubx.feed_max_us = MAX(_ubx.feed_max_us, dt);
+}
+
+void AP_Ada::swash_configure(uint8_t instance, const cw_swash_config_t &cfg)
+{
+    if (!_healthy || instance >= CW_SWASH_MAX_INSTANCES) {
+        return;
+    }
+    bool ok = false;
+    cw_swash_configure(instance, &cfg, &ok);
+    _swash_ok[instance] = ok;
+}
+
+// ArduPilot's outputs are floats, the Ada mixer computes in double
+static const float SWASH_TOLERANCE = 1.0e-5f;
+
+void AP_Ada::swash_check(uint8_t instance, float roll, float pitch, float collective,
+                         const bool enabled[4], const float output[4])
+{
+    if (!_healthy || instance >= CW_SWASH_MAX_INSTANCES) {
+        return;
+    }
+    if (!_swash_ok[instance]) {
+        _swash.unsupported++;
+        return;
+    }
+    cw_swash_out_t ada;
+    bool ok = false;
+    cw_swash_calculate(instance, roll, pitch, collective, &ada, &ok);
+    if (!ok) {
+        _swash.rejects++;
+        return;
+    }
+    _swash.checks++;
+    _swash.max_cyclic = MAX(_swash.max_cyclic, MAX(fabsf(roll), fabsf(pitch)));
+
+    bool differs = false;
+    uint8_t first = 0;
+    float err = 0;
+    for (uint8_t i = 0; i < 4; i++) {
+        const bool ada_enabled = (ada.enabled & (1U << i)) != 0;
+        if (ada_enabled != enabled[i]) {
+            differs = true;
+            first = i;
+            break;
+        }
+        if (enabled[i]) {
+            const float e = fabsf(float(ada.servo[i]) - output[i]);
+            if (e > err) {
+                err = e;
+                first = i;
+            }
+        }
+    }
+    _swash.max_err = MAX(_swash.max_err, err);
+    differs = differs || err > SWASH_TOLERANCE;
+    if (!differs) {
+        return;
+    }
+    _swash.mismatch++;
+    if (!_swash_mismatch_reported) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: swash %u servo %u differs: %.6f vs %.6f",
+                      unsigned(instance), unsigned(first + 1),
+                      double(ada.servo[first]), double(output[first]));
+        _swash_mismatch_reported = true;
+    }
 }
 
 void AP_Ada::ubx_reset(uint8_t instance)

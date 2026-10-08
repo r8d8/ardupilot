@@ -17,6 +17,7 @@
   uses the Ada result.
   - ADA:  quaternion rotation against AP_Math
   - ADAU: the UBX parser against AP_GPS_UBLOX, NAV-PVT by NAV-PVT
+  - ADAS: the swashplate mixer against AP_MotorsHeli_Swash, servo by servo
  */
 class AP_Ada {
 public:
@@ -40,6 +41,13 @@ public:
     void ubx_reset(uint8_t instance);
     void ubx_check_nav_pvt(uint8_t instance, const cw_ubx_nav_pvt_t &ap);
 
+    // swashplate shadow, called by AP_MotorsHeli_Swash (instance 0 or 1):
+    // its configuration whenever it is configured, and every mix with the
+    // inputs before collective reversal and its four outputs
+    void swash_configure(uint8_t instance, const cw_swash_config_t &cfg);
+    void swash_check(uint8_t instance, float roll, float pitch, float collective,
+                     const bool enabled[4], const float output[4]);
+
 private:
     static AP_Ada *_singleton;
 
@@ -62,6 +70,19 @@ private:
         uint32_t feed_max_us; // longest single ubx_feed
     } _ubx;
     bool _ubx_mismatch_reported;
+
+    // swashplate mixers the Ada side accepted (by instance)
+    bool _swash_ok[CW_SWASH_MAX_INSTANCES];
+    // since the last ADAS log message
+    struct {
+        uint32_t checks;      // mixes compared
+        uint32_t rejects;     // inputs the Ada mixer refused
+        uint32_t unsupported; // mixes not compared: configuration not supported
+        uint32_t mismatch;    // mixes with a servo or enable flag differing
+        float max_err;        // largest servo output difference
+        float max_cyclic;     // largest |roll| or |pitch| input, to show coverage
+    } _swash;
+    bool _swash_mismatch_reported;
 
     uint32_t _last_log_ms;
 };
