@@ -99,9 +99,14 @@ void AP_Ada::update()
 // @Field: Mat: AP_GPS_UBLOX NAV-PVTs the Ada decode equals
 // @Field: Mis: AP_GPS_UBLOX NAV-PVTs the Ada decode differs from or misses
 // @Field: CkE: frames the Ada parser dropped on a checksum error
-    AP::logger().Write("ADAU", "TimeUS,PAP,PAda,Mat,Mis,CkE", "s-----", "F-----",
-                       "QIIIII", AP_HAL::micros64(), _ubx.ap_pvt, _ubx.ada_pvt,
-                       _ubx.match, _ubx.mismatch, _ubx.ck_errors);
+// @Field: Byt: bytes fed to the Ada parser in this interval
+// @Field: FT: time spent in the Ada parser in this interval (sum of 1 us tick differences, so an unbiased estimate even below 1 us per byte)
+// @Field: FMx: longest single call of the Ada parser in this interval
+    AP::logger().Write("ADAU", "TimeUS,PAP,PAda,Mat,Mis,CkE,Byt,FT,FMx",
+                       "s------ss", "F------FF", "QIIIIIIII",
+                       AP_HAL::micros64(), _ubx.ap_pvt, _ubx.ada_pvt,
+                       _ubx.match, _ubx.mismatch, _ubx.ck_errors,
+                       _ubx.bytes, _ubx.feed_us, _ubx.feed_max_us);
 #endif
 
     _checks = 0;
@@ -115,6 +120,8 @@ void AP_Ada::ubx_feed(uint8_t instance, uint8_t byte)
     if (!_healthy) {
         return;
     }
+    // timed for HZ-19: what the shadow adds to every GPS byte
+    const uint32_t t0 = AP_HAL::micros();
     uint8_t status = CW_UBX_STATUS_NONE;
     cw_ubx_feed(instance, byte, &status);
     if (status == CW_UBX_STATUS_FRAME) {
@@ -127,6 +134,10 @@ void AP_Ada::ubx_feed(uint8_t instance, uint8_t byte)
     } else if (status == CW_UBX_STATUS_CHECKSUM) {
         _ubx.ck_errors++;
     }
+    const uint32_t dt = AP_HAL::micros() - t0;
+    _ubx.bytes++;
+    _ubx.feed_us += dt;
+    _ubx.feed_max_us = MAX(_ubx.feed_max_us, dt);
 }
 
 void AP_Ada::ubx_reset(uint8_t instance)

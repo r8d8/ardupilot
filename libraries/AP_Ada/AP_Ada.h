@@ -57,6 +57,9 @@ private:
         uint32_t match;       // AP NAV-PVTs the Ada decode equals
         uint32_t mismatch;    // AP NAV-PVTs the Ada decode differs from, or misses
         uint32_t ck_errors;   // frames the Ada parser dropped on checksum
+        uint32_t bytes;       // bytes fed to the Ada parser
+        uint32_t feed_us;     // time in ubx_feed, sum of 1 us tick differences
+        uint32_t feed_max_us; // longest single ubx_feed
     } _ubx;
     bool _ubx_mismatch_reported;
 
