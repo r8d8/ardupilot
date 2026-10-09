@@ -10,6 +10,7 @@
 
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_Logger/AP_Logger.h>
+#include <GCS_MAVLink/GCS.h>
 
 #ifndef RANGEFINDER_TILT_CORRECTION         // by disable tilt correction for use of range finder data by EKF
  # define RANGEFINDER_TILT_CORRECTION 1
@@ -25,6 +26,31 @@
 
 #ifndef RANGEFINDER_HEALTH_MIN
  # define RANGEFINDER_HEALTH_MIN 3          // number of good reads that indicates a healthy rangefinder
+#endif
+
+/*
+  Plausibility gate (Clearwater, hazard HZ-22): a downward reading far
+  shorter than the height expected from the EKF is not adopted. The
+  Goblin's LW20/C reports phantom returns of 4.5-6 m and 9-15 m with
+  status Good above about 40 m; without the gate the glitch logic below
+  accepts a steady phantom after RANGEFINDER_GLITCH_NUM_SAMPLES and
+  surface tracking climbs by the difference.
+  expected = EKF height above origin - terrain height under the last
+  reading in use. A reading is implausible when expected is above
+  RANGEFINDER_PLAUSIBLE_MIN_M and the reading below
+  RANGEFINDER_PLAUSIBLE_RATIO of it. One-sided: longer readings always
+  pass, and near the ground the rangefinder keeps full authority.
+ */
+#ifndef RANGEFINDER_PLAUSIBLE_MIN_M
+ # define RANGEFINDER_PLAUSIBLE_MIN_M 20.0f
+#endif
+
+#ifndef RANGEFINDER_PLAUSIBLE_RATIO
+ # define RANGEFINDER_PLAUSIBLE_RATIO 0.5f
+#endif
+
+#ifndef RANGEFINDER_PLAUSIBLE_REPORT_MS
+ # define RANGEFINDER_PLAUSIBLE_REPORT_MS 10000   // at most one GCS warning this often
 #endif
 
 void AP_SurfaceDistance::update()
@@ -51,6 +77,7 @@ void AP_SurfaceDistance::update()
         Unhealthy       = 1U<<1, // true if rangefinder is considered unhealthy
         Stale_Data      = 1U<<2, // true if the last healthy rangefinder reading is no longer valid
         Glitch_Detected = 1U<<3, // true if a measurement glitch detected
+        Implausible     = 1U<<4, // true if the reading is far shorter than the EKF height above the last surface: not used
     };
 
     // reset status and add to the bitmask as we progress through the update
@@ -70,6 +97,43 @@ void AP_SurfaceDistance::update()
 
     // tilt corrected but unfiltered, not glitch protected alt
     alt_m = tilt_correction * rangefinder->distance_orient(rotation);
+
+    // remember inertial alt to allow us to interpolate rangefinder
+    float pos_d_m;
+    if (AP::ahrs().get_relative_position_D_origin_float(pos_d_m)) {
+        ref_pos_u_m = -pos_d_m;
+    }
+
+    // an EKF height reset moves the origin frame, not the surface
+    float reset_d_m;
+    const uint32_t reset_ms = AP::ahrs().getLastPosDownReset(reset_d_m);
+    if (reset_ms != last_pos_reset_ms) {
+        if (plausible_terrain_valid) {
+            plausible_terrain_u_m -= reset_d_m;
+        }
+        last_pos_reset_ms = reset_ms;
+    }
+
+    // plausibility gate, downward rangefinders only (see top of file)
+    if (alt_healthy && rotation == ROTATION_PITCH_270 && plausible_terrain_valid) {
+        const float expected_m = ref_pos_u_m - plausible_terrain_u_m;
+        if (expected_m > RANGEFINDER_PLAUSIBLE_MIN_M &&
+            alt_m < RANGEFINDER_PLAUSIBLE_RATIO * expected_m) {
+            // not adopted: glitch state, filter and terrain stay as they are
+            alt_healthy = false;
+            status |= (uint8_t)Surface_Distance_Status::Unhealthy;
+            status |= (uint8_t)Surface_Distance_Status::Implausible;
+            if (now - implausible_reported_ms > RANGEFINDER_PLAUSIBLE_REPORT_MS) {
+                implausible_reported_ms = now;
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rangefinder: %.1f m implausible, expected %.0f m",
+                              double(alt_m), double(expected_m));
+            }
+#if HAL_LOGGING_ENABLED
+            Log_Write();
+#endif
+            return;
+        }
+    }
 
     // Glitch Handling. Rangefinder readings more than RANGEFINDER_GLITCH_ALT_M from the last good reading
     // are considered a glitch and glitch_count becomes non-zero
@@ -111,10 +175,10 @@ void AP_SurfaceDistance::update()
         last_healthy_ms = now;
     }
 
-    // remember inertial alt to allow us to interpolate rangefinder
-    float pos_d_m;
-    if (AP::ahrs().get_relative_position_D_origin_float(pos_d_m)) {
-        ref_pos_u_m = -pos_d_m;
+    // the reading in use is the gate's reference
+    if (alt_healthy && glitch_count == 0) {
+        plausible_terrain_u_m = ref_pos_u_m - alt_glitch_protected_m;
+        plausible_terrain_valid = true;
     }
 
     // handle reset of terrain offset

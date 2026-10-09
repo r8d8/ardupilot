@@ -44,5 +44,12 @@ private:
     uint8_t status;
     uint32_t last_healthy_ms;
 
+    // plausibility gate (HZ-22): terrain height above origin under the
+    // last reading in use, and housekeeping
+    float plausible_terrain_u_m = 0;
+    bool plausible_terrain_valid = false;
+    uint32_t last_pos_reset_ms = 0;
+    uint32_t implausible_reported_ms = 0;
+
     const Rotation rotation;
 };
