@@ -14,7 +14,7 @@ itself. Programs relink when the library's contents change.
 import glob
 import os
 
-from waflib import Task, Utils
+from waflib import Options, Task, Utils
 from waflib.Configure import conf
 from waflib.TaskGen import after_method, feature
 
@@ -80,8 +80,9 @@ class gprbuild_fcs(Task.Task):
 
     def run(self):
         out_dir = self.outputs[0].parent.parent.parent.abspath()
+        # as many processes as waf's own -j: the laptop has a load cap
         cmd = self.env.GPRBUILD + [
-            '-p', '-q', '-j0',
+            '-p', '-q', '-j%d' % Options.options.jobs,
             '-P', os.path.join(self.env.FCS_DIR, 'fcs.gpr'),
             '-XCW_TARGET=%s' % self.env.FCS_TARGET,
             '-XCW_BUILD=release',
