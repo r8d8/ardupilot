@@ -4,6 +4,8 @@
 
 #if AP_ADA_ENABLED
 
+#include "AP_Ada_CallTimer.h"
+
 #include <AP_Common/AP_Common.h>
 #include <stdint.h>
 #include <cw_fcs.h>
@@ -18,6 +20,8 @@
   - ADA:  quaternion rotation against AP_Math
   - ADAU: the UBX parser against AP_GPS_UBLOX, NAV-PVT by NAV-PVT
   - ADAS: the swashplate mixer against AP_MotorsHeli_Swash, servo by servo
+  The UBX and swashplate calls are timed (AP_Ada_CallTimer); a shadow whose
+  calls overrun their budget too often is switched off (HZ-19, HZ-20).
  */
 class AP_Ada {
 public:
@@ -65,11 +69,10 @@ private:
         uint32_t match;       // AP NAV-PVTs the Ada decode equals
         uint32_t mismatch;    // AP NAV-PVTs the Ada decode differs from, or misses
         uint32_t ck_errors;   // frames the Ada parser dropped on checksum
-        uint32_t bytes;       // bytes fed to the Ada parser
-        uint32_t feed_us;     // time in ubx_feed, sum of 1 us tick differences
-        uint32_t feed_max_us; // longest single ubx_feed
     } _ubx;
     bool _ubx_mismatch_reported;
+    // calls of ubx_feed, one per byte
+    AP_Ada_CallTimer _ubx_time{AP_ADA_UBX_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
 
     // swashplate mixers the Ada side accepted (by instance)
     bool _swash_ok[CW_SWASH_MAX_INSTANCES];
@@ -83,6 +86,11 @@ private:
         float max_cyclic;     // largest |roll| or |pitch| input, to show coverage
     } _swash;
     bool _swash_mismatch_reported;
+    // calls of the Ada mixer
+    AP_Ada_CallTimer _swash_time{AP_ADA_SWASH_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
+
+    // count one timed call; report the first overrun and the trip
+    void timed(AP_Ada_CallTimer &timer, const char *name, uint32_t dt_us);
 
     uint32_t _last_log_ms;
 };

@@ -102,11 +102,16 @@ void AP_Ada::update()
 // @Field: Byt: bytes fed to the Ada parser in this interval
 // @Field: FT: time spent in the Ada parser in this interval (sum of 1 us tick differences, so an unbiased estimate even below 1 us per byte)
 // @Field: FMx: longest single call of the Ada parser in this interval
-    AP::logger().Write("ADAU", "TimeUS,PAP,PAda,Mat,Mis,CkE,Byt,FT,FMx",
-                       "s------ss", "F------FF", "QIIIIIIII",
+// @Field: FP: 99th percentile of the Ada parser's call times in this interval (upper edge of its histogram bin, at most FMx)
+// @Field: Ovr: Ada parser calls over the time budget (AP_ADA_UBX_BUDGET_US) in this interval
+// @Field: Off: 1 once the UBX shadow is switched off after AP_ADA_TRIP_OVERRUNS overruns since boot
+    AP::logger().Write("ADAU", "TimeUS,PAP,PAda,Mat,Mis,CkE,Byt,FT,FMx,FP,Ovr,Off",
+                       "s------sss--", "F------FFF--", "QIIIIIIIIIIB",
                        AP_HAL::micros64(), _ubx.ap_pvt, _ubx.ada_pvt,
                        _ubx.match, _ubx.mismatch, _ubx.ck_errors,
-                       _ubx.bytes, _ubx.feed_us, _ubx.feed_max_us);
+                       _ubx_time.calls(), _ubx_time.sum_us(), _ubx_time.max_us(),
+                       _ubx_time.percentile_us(99), _ubx_time.overruns(),
+                       uint8_t(_ubx_time.tripped()));
 
 // @LoggerMessage: ADAS
 // @Description: Ada/SPARK swashplate mixer in shadow, compared with AP_MotorsHeli_Swash
@@ -117,10 +122,18 @@ void AP_Ada::update()
 // @Field: Mis: mixes where a servo output or enable flag differs
 // @Field: Err: largest servo output difference in this interval
 // @Field: Cyc: largest roll or pitch input compared in this interval
-    AP::logger().Write("ADAS", "TimeUS,N,Rej,Uns,Mis,Err,Cyc", "s------", "F------",
-                       "QIIIIff", AP_HAL::micros64(), _swash.checks, _swash.rejects,
+// @Field: TT: time spent in the Ada mixer in this interval (sum of 1 us tick differences)
+// @Field: TMx: longest single call of the Ada mixer in this interval
+// @Field: TP: 99th percentile of the Ada mixer's call times in this interval (upper edge of its histogram bin, at most TMx)
+// @Field: Ovr: Ada mixer calls over the time budget (AP_ADA_SWASH_BUDGET_US) in this interval
+// @Field: Off: 1 once the swashplate shadow is switched off after AP_ADA_TRIP_OVERRUNS overruns since boot
+    AP::logger().Write("ADAS", "TimeUS,N,Rej,Uns,Mis,Err,Cyc,TT,TMx,TP,Ovr,Off",
+                       "s------sss--", "F------FFF--", "QIIIIffIIIIB",
+                       AP_HAL::micros64(), _swash.checks, _swash.rejects,
                        _swash.unsupported, _swash.mismatch, _swash.max_err,
-                       _swash.max_cyclic);
+                       _swash.max_cyclic, _swash_time.sum_us(), _swash_time.max_us(),
+                       _swash_time.percentile_us(99), _swash_time.overruns(),
+                       uint8_t(_swash_time.tripped()));
 #endif
 
     _checks = 0;
@@ -128,11 +141,29 @@ void AP_Ada::update()
     _max_err = 0;
     _ubx = {};
     _swash = {};
+    _ubx_time.new_interval();
+    _swash_time.new_interval();
+}
+
+void AP_Ada::timed(AP_Ada_CallTimer &timer, const char *name, uint32_t dt_us)
+{
+    const bool was_tripped = timer.tripped();
+    if (!timer.add(dt_us)) {
+        return;
+    }
+    if (timer.overruns_total() == 1) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: %s call took %u us, budget %u us",
+                      name, unsigned(dt_us), unsigned(timer.budget_us()));
+    }
+    if (timer.tripped() && !was_tripped) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: %s shadow off after %u calls over %u us",
+                      name, unsigned(timer.overruns_total()), unsigned(timer.budget_us()));
+    }
 }
 
 void AP_Ada::ubx_feed(uint8_t instance, uint8_t byte)
 {
-    if (!_healthy) {
+    if (!_healthy || _ubx_time.tripped()) {
         return;
     }
     // timed for HZ-19: what the shadow adds to every GPS byte
@@ -149,10 +180,7 @@ void AP_Ada::ubx_feed(uint8_t instance, uint8_t byte)
     } else if (status == CW_UBX_STATUS_CHECKSUM) {
         _ubx.ck_errors++;
     }
-    const uint32_t dt = AP_HAL::micros() - t0;
-    _ubx.bytes++;
-    _ubx.feed_us += dt;
-    _ubx.feed_max_us = MAX(_ubx.feed_max_us, dt);
+    timed(_ubx_time, "UBX", AP_HAL::micros() - t0);
 }
 
 void AP_Ada::swash_configure(uint8_t instance, const cw_swash_config_t &cfg)
@@ -174,13 +202,19 @@ void AP_Ada::swash_check(uint8_t instance, float roll, float pitch, float collec
     if (!_healthy || instance >= CW_SWASH_MAX_INSTANCES) {
         return;
     }
+    if (_swash_time.tripped()) {
+        return;
+    }
     if (!_swash_ok[instance]) {
         _swash.unsupported++;
         return;
     }
     cw_swash_out_t ada;
     bool ok = false;
+    // timed for HZ-20: what the shadow adds to every mix
+    const uint32_t t0 = AP_HAL::micros();
     cw_swash_calculate(instance, roll, pitch, collective, &ada, &ok);
+    timed(_swash_time, "swash", AP_HAL::micros() - t0);
     if (!ok) {
         _swash.rejects++;
         return;
@@ -222,7 +256,7 @@ void AP_Ada::swash_check(uint8_t instance, float roll, float pitch, float collec
 
 void AP_Ada::ubx_reset(uint8_t instance)
 {
-    if (_healthy) {
+    if (_healthy && !_ubx_time.tripped()) {
         cw_ubx_reset(instance);
     }
 }
@@ -230,7 +264,7 @@ void AP_Ada::ubx_reset(uint8_t instance)
 // the Ada parser saw the same bytes first, so its frame must be this NAV-PVT
 void AP_Ada::ubx_check_nav_pvt(uint8_t instance, const cw_ubx_nav_pvt_t &ap)
 {
-    if (!_healthy) {
+    if (!_healthy || _ubx_time.tripped()) {
         return;
     }
     _ubx.ap_pvt++;
