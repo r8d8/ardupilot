@@ -29,6 +29,7 @@
 #include <AP_Vehicle/AP_Vehicle_Type.h>
 #include <AP_RCTelemetry/AP_CRSF_Telem.h>
 #include <AP_SerialManager/AP_SerialManager.h>
+#include <AP_Ada/AP_Ada.h>
 
 
 #define CRSF_SUBSET_RC_STARTING_CHANNEL_BITS        5
@@ -177,6 +178,13 @@ void AP_RCProtocol_CRSF::_process_byte(uint8_t byte)
     //debug("process_byte(0x%x)", byte);
     const uint32_t now = AP_HAL::micros();
 
+#if AP_ADA_ENABLED
+    // the Ada parser in shadow sees the byte first, with the same time
+    if (AP_Ada *ada = AP_Ada::get_singleton()) {
+        ada->crsf_feed(byte, now);
+    }
+#endif
+
     // extra check for overflow, should never happen since it will have been handled in check_frame()
     if (_frame_ofs >= sizeof(_frame)) {
         _frame_ofs = 0;
@@ -247,6 +255,11 @@ bool AP_RCProtocol_CRSF::check_frame(uint32_t timestamp_us)
             _last_tx_frame_time_us = timestamp_us;  // we have received a frame from the transmitter
             add_input(MAX_CHANNELS, _channels, false, _link_status.rssi, _link_status.link_quality);
         }
+#if AP_ADA_ENABLED
+        if (AP_Ada *ada = AP_Ada::get_singleton()) {
+            ada->crsf_check(_frame.type, _frame.length, _channels, _link_status.link_quality);
+        }
+#endif
 
         // we consumed the frame
         const auto len = _frame.length + CRSF_HEADER_LEN;
