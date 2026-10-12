@@ -140,6 +140,8 @@ void AP_Ada::update()
                        uint8_t(_swash_time.tripped()));
 #endif
 
+    crsf_report();
+
     _checks = 0;
     _rejects = 0;
     _max_err = 0;
@@ -147,6 +149,62 @@ void AP_Ada::update()
     _swash = {};
     _ubx_time.new_interval();
     _swash_time.new_interval();
+}
+
+// the CRSF snapshot from the RC input thread: log it if new, send what it
+// reports (main thread)
+void AP_Ada::crsf_report()
+{
+    CrsfSnapshot s;
+    {
+        WITH_SEMAPHORE(_crsf_sem);
+        s = _crsf_pub;
+        _crsf_pub.mismatch = nullptr;
+        _crsf_pub.overrun_us = 0;
+        _crsf_pub.trip = false;
+    }
+    if (s.mismatch != nullptr) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: CRSF frame 0x%02x differs: %s",
+                      unsigned(s.mismatch_type), s.mismatch);
+    }
+    if (s.overrun_us != 0) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: CRSF call took %u us, budget %u us",
+                      unsigned(s.overrun_us), unsigned(AP_ADA_CRSF_BUDGET_US));
+    }
+    if (s.trip) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: CRSF shadow off after %u calls over %u us",
+                      unsigned(AP_ADA_TRIP_OVERRUNS), unsigned(AP_ADA_CRSF_BUDGET_US));
+    }
+    if (s.seq == _crsf_logged_seq) {
+        return;
+    }
+    _crsf_logged_seq = s.seq;
+
+#if HAL_LOGGING_ENABLED
+// @LoggerMessage: ADAC
+// @Description: Ada/SPARK CRSF parser in shadow, compared with AP_RCProtocol_CRSF (about once a second while CRSF bytes come)
+// @Field: TimeUS: Time since system startup
+// @Field: FAP: frames decoded by AP_RCProtocol_CRSF in this interval
+// @Field: FAda: frames completed by the Ada parser in this interval
+// @Field: RC: RC channel frames compared, channel by channel
+// @Field: Mat: AP_RCProtocol_CRSF frames the Ada decode equals
+// @Field: Mis: AP_RCProtocol_CRSF frames the Ada decode differs from or misses
+// @Field: Sub: CRSF v3 subset RC frames (not compared)
+// @Field: CRC: frames the Ada parser dropped on a CRC error
+// @Field: Byt: bytes fed to the Ada parser in this interval
+// @Field: FT: time spent in the Ada parser in this interval (sum of 1 us tick differences)
+// @Field: FMx: longest single call of the Ada parser in this interval
+// @Field: FP: 99th percentile of the Ada parser's call times in this interval (upper edge of its histogram bin, at most FMx)
+// @Field: Ovr: Ada parser calls over the time budget (AP_ADA_CRSF_BUDGET_US) in this interval
+// @Field: Off: 1 once the CRSF shadow is switched off after AP_ADA_TRIP_OVERRUNS overruns since boot
+    const CrsfCounts &c = s.counts;
+    AP::logger().Write("ADAC", "TimeUS,FAP,FAda,RC,Mat,Mis,Sub,CRC,Byt,FT,FMx,FP,Ovr,Off",
+                       "s--------sss--", "F--------FFF--", "QIIIIIIIIIIIIB",
+                       AP_HAL::micros64(), c.ap_frames, c.ada_frames, c.rc,
+                       c.match, c.mismatch, c.subset, c.crc_errors,
+                       s.calls, s.sum_us, s.max_us, s.p99_us, s.overruns,
+                       uint8_t(s.tripped));
+#endif
 }
 
 void AP_Ada::timed(AP_Ada_CallTimer &timer, const char *name, uint32_t dt_us)
@@ -312,6 +370,127 @@ void AP_Ada::ubx_check_nav_pvt(uint8_t instance, const cw_ubx_nav_pvt_t &ap)
         GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: UBX %u NAV-PVT differs: %s",
                       unsigned(instance), field);
         _ubx_mismatch_reported = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CRSF shadow: the Ada parser sees every byte first, with the driver's own
+// time, so when the driver decodes a frame the Ada parser has just
+// completed the same one
+
+void AP_Ada::crsf_feed(uint8_t byte, uint32_t now_us)
+{
+    if (!_healthy) {
+        return;
+    }
+    if (!_crsf_time.tripped()) {
+        // timed: what the shadow adds to every RC byte
+        const uint32_t t0 = AP_HAL::micros();
+        uint8_t status = CW_CRSF_STATUS_NONE;
+        cw_crsf_feed(byte, now_us, &status);
+        if (status == CW_CRSF_STATUS_FRAME) {
+            _crsf.ada_frames++;
+        } else if (status == CW_CRSF_STATUS_CRC) {
+            _crsf.crc_errors++;
+        }
+        const uint32_t dt = AP_HAL::micros() - t0;
+        if (_crsf_time.add(dt)) {
+            WITH_SEMAPHORE(_crsf_sem);
+            if (_crsf_time.overruns_total() == 1) {
+                _crsf_pub.overrun_us = MAX(dt, 1U);
+            }
+            if (_crsf_time.tripped()) {
+                _crsf_pub.trip = true;
+            }
+        }
+    }
+    crsf_publish();
+}
+
+// once a second, in the RC input thread: the interval's counts and times
+// to the snapshot, and a new interval
+void AP_Ada::crsf_publish()
+{
+    const uint32_t now_ms = AP_HAL::millis();
+    if (now_ms - _crsf_roll_ms < 1000) {
+        return;
+    }
+    _crsf_roll_ms = now_ms;
+    {
+        WITH_SEMAPHORE(_crsf_sem);
+        _crsf_pub.counts = _crsf;
+        _crsf_pub.calls = _crsf_time.calls();
+        _crsf_pub.sum_us = _crsf_time.sum_us();
+        _crsf_pub.max_us = _crsf_time.max_us();
+        _crsf_pub.p99_us = _crsf_time.percentile_us(99);
+        _crsf_pub.overruns = _crsf_time.overruns();
+        _crsf_pub.tripped = _crsf_time.tripped();
+        _crsf_pub.seq++;
+    }
+    _crsf = {};
+    _crsf_time.new_interval();
+}
+
+// CRSF frame types (AP_CRSF_Protocol)
+static const uint8_t CRSF_LINK_STATISTICS = 0x14;
+static const uint8_t CRSF_RC_CHANNELS = 0x16;
+static const uint8_t CRSF_RC_SUBSET = 0x17;
+
+void AP_Ada::crsf_check(uint8_t type, uint8_t length, const uint16_t *channels,
+                        int16_t link_quality)
+{
+    // the Ada parser saw the same bytes first (crsf_feed, same thread)
+    if (!_healthy || _crsf_time.tripped()) {
+        return;
+    }
+    _crsf.ap_frames++;
+
+    uint8_t ada_type = 0;
+    uint8_t ada_payload = 0;
+    bool ok = false;
+    cw_crsf_frame(&ada_type, &ada_payload, &ok);
+    const char *what = nullptr;
+    if (!ok) {
+        what = "missing";
+    } else if (ada_type != type || ada_payload + 2U != length) {
+        what = "type or length";
+    } else if (type == CRSF_RC_CHANNELS) {
+        _crsf.rc++;
+        cw_crsf_rc_t rc;
+        cw_crsf_rc(&rc, &ok);
+        if (!ok) {
+            what = "RC frame length";
+        } else {
+            for (uint8_t i = 0; i < ARRAY_SIZE(rc.channels); i++) {
+                if (rc.channels[i] != channels[i]) {
+                    what = "RC channel";
+                    break;
+                }
+            }
+        }
+    } else if (type == CRSF_LINK_STATISTICS) {
+        cw_crsf_link_t link;
+        cw_crsf_link(&link, &ok);
+        if (!ok || link.uplink_lq != link_quality) {
+            what = "link quality";
+        }
+    } else if (type == CRSF_RC_SUBSET) {
+        // framing compared; its channels are not decoded on the Ada side
+        _crsf.subset++;
+        return;
+    }
+
+    if (what == nullptr) {
+        _crsf.match++;
+        return;
+    }
+    _crsf.mismatch++;
+    if (!_crsf_mismatch_seen) {
+        // reported by the main thread: no GCS text on this stack
+        WITH_SEMAPHORE(_crsf_sem);
+        _crsf_pub.mismatch = what;
+        _crsf_pub.mismatch_type = type;
+        _crsf_mismatch_seen = true;
     }
 }
 

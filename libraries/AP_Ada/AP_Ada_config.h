@@ -20,6 +20,10 @@
 #define AP_ADA_SWASH_BUDGET_US 100
 #endif
 
+#ifndef AP_ADA_CRSF_BUDGET_US
+#define AP_ADA_CRSF_BUDGET_US 100
+#endif
+
 // the navigation filter: one predict (21-state covariance) and the
 // fusions that have new data, at AP_ADA_NAV_RATE_HZ
 #ifndef AP_ADA_NAV_BUDGET_US

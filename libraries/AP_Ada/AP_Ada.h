@@ -7,6 +7,7 @@
 #include "AP_Ada_CallTimer.h"
 
 #include <AP_Common/AP_Common.h>
+#include <AP_HAL/Semaphores.h>
 #include <AP_Math/AP_Math.h>
 #include <stdint.h>
 #include <cw_fcs.h>
@@ -22,7 +23,9 @@
   - ADAU: the UBX parser against AP_GPS_UBLOX, NAV-PVT by NAV-PVT
   - ADAS: the swashplate mixer against AP_MotorsHeli_Swash, servo by servo
   - ADAN, ADNT: the navigation filter (CW_Nav.INS) against the AHRS (EKF3)
-  The UBX, swashplate and navigation calls are timed (AP_Ada_CallTimer); a
+  - ADAC: the CRSF parser against AP_RCProtocol_CRSF, frame by frame
+  The UBX, swashplate, navigation and CRSF calls are timed
+  (AP_Ada_CallTimer); a
   shadow whose calls overrun their budget too often is switched off (HZ-19,
   HZ-20; the same for the navigation shadow).
  */
@@ -61,6 +64,16 @@ public:
     // compares with the AHRS
     void nav_sample();
     void nav_update();
+
+    // CRSF shadow, called by AP_RCProtocol_CRSF: every byte it processes,
+    // with the time it uses, before it does; every frame it decodes, with
+    // its type and length byte, the channels and the link quality after.
+    // On ChibiOS these run in the RC input thread (1 KB stack), not the
+    // main loop: they count and time there, publish a snapshot once a
+    // second, and leave logging and messages to update()
+    void crsf_feed(uint8_t byte, uint32_t now_us);
+    void crsf_check(uint8_t type, uint8_t length, const uint16_t *channels,
+                    int16_t link_quality);
 
     // called by AP_VisualOdom_MAV with every pose, rotated and corrected
     // as the EKF gets it; consumed: the EKF was given it (quality)
@@ -102,6 +115,43 @@ private:
     bool _swash_mismatch_reported;
     // calls of the Ada mixer
     AP_Ada_CallTimer _swash_time{AP_ADA_SWASH_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
+
+    // CRSF shadow counts, over one interval of about a second
+    struct CrsfCounts {
+        uint32_t ap_frames;   // frames AP_RCProtocol_CRSF decoded
+        uint32_t ada_frames;  // frames the Ada parser completed
+        uint32_t rc;          // RC channel frames compared
+        uint32_t match;       // AP frames the Ada decode equals
+        uint32_t mismatch;    // AP frames the Ada decode differs from, or misses
+        uint32_t subset;      // CRSF v3 subset RC frames, not compared
+        uint32_t crc_errors;  // frames the Ada parser dropped on CRC
+    };
+    // what the RC input thread publishes for the main thread
+    struct CrsfSnapshot {
+        CrsfCounts counts;
+        uint32_t calls, sum_us, max_us, p99_us, overruns;
+        bool tripped;
+        uint32_t seq;         // advances with every new snapshot
+        // events since the main thread last looked
+        const char *mismatch; // the first mismatch (reported once)
+        uint8_t mismatch_type;
+        uint32_t overrun_us;  // the first overrun, 0: none
+        bool trip;            // the shadow has just switched off
+    };
+    // RC input thread only
+    CrsfCounts _crsf;
+    uint32_t _crsf_roll_ms;
+    bool _crsf_mismatch_seen;
+    // calls of crsf_feed, one per byte
+    AP_Ada_CallTimer _crsf_time{AP_ADA_CRSF_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
+    // shared, under _crsf_sem
+    CrsfSnapshot _crsf_pub;
+    HAL_Semaphore _crsf_sem;
+    // main thread only
+    uint32_t _crsf_logged_seq;
+
+    void crsf_publish();
+    void crsf_report();
 
     // navigation shadow
     struct {
