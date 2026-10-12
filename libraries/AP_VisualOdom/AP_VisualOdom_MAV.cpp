@@ -22,6 +22,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_Logger/AP_Logger.h>
+#include <AP_Ada/AP_Ada.h>
 
 // consume vision pose estimate data and send to EKF. distances in meters
 // quality of -1 means failed, 0 means unknown, 1 is worst, 100 is best
@@ -56,6 +57,14 @@ void AP_VisualOdom_MAV::handle_pose_estimate(uint64_t remote_time_us, uint32_t t
     float pitch;
     float yaw;
     attitude.to_euler(roll, pitch, yaw);
+
+#if AP_ADA_ENABLED
+    // the navigation shadow gets what the EKF gets
+    AP_Ada *ada = AP_Ada::get_singleton();
+    if (ada != nullptr) {
+        ada->nav_vio(pos, posErr, reset_counter, consume);
+    }
+#endif
 
 #if HAL_LOGGING_ENABLED
     // log sensor data
