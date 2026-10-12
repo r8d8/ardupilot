@@ -20,6 +20,18 @@
 #define AP_ADA_SWASH_BUDGET_US 100
 #endif
 
+// the navigation filter: one predict (21-state covariance) and the
+// fusions that have new data, at AP_ADA_NAV_RATE_HZ
+#ifndef AP_ADA_NAV_BUDGET_US
+#define AP_ADA_NAV_BUDGET_US 1000
+#endif
+
+// predict rate: the IMU is added up over the interval (100 Hz matches EKF3
+// on the Goblin logs as well as 400 Hz does, fcs/README.md)
+#ifndef AP_ADA_NAV_RATE_HZ
+#define AP_ADA_NAV_RATE_HZ 100
+#endif
+
 #ifndef AP_ADA_TRIP_OVERRUNS
 #define AP_ADA_TRIP_OVERRUNS 10
 #endif

@@ -5,6 +5,10 @@
 #include <cw_fcs.h>
 
 #include <AP_AHRS/AP_AHRS.h>
+#include <AP_Baro/AP_Baro.h>
+#include <AP_Common/Location.h>
+#include <AP_Compass/AP_Compass.h>
+#include <AP_GPS/AP_GPS.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_InertialSensor/AP_InertialSensor.h>
 #include <AP_Logger/AP_Logger.h>
@@ -309,6 +313,308 @@ void AP_Ada::ubx_check_nav_pvt(uint8_t instance, const cw_ubx_nav_pvt_t &ap)
                       unsigned(instance), field);
         _ubx_mismatch_reported = true;
     }
+}
+
+// ---------------------------------------------------------------------------
+// navigation shadow: CW_Nav.INS against the AHRS (EKF3)
+
+static cw_vec3_t c_vec(const Vector3f &v)
+{
+    return cw_vec3_t { double(v.x), double(v.y), double(v.z) };
+}
+
+// a VIO pose this recent makes VIO the position source, otherwise GPS
+static const uint32_t NAV_VIO_TIMEOUT_MS = 2000;
+// the magnetometer and barometer at most this often: the Goblin logs the
+// filter was validated on have them at 10 Hz
+static const uint32_t NAV_SLOW_SENSOR_MS = 50;
+// the Ada filter's longest predict step (CW_Nav.Step), s; a longer IMU
+// interval is split into up to NAV_MAX_STEPS steps, beyond that dropped
+static const float NAV_MAX_STEP_S = 0.05f;
+static const uint8_t NAV_MAX_STEPS = 4;
+// noise floors as EKF3's defaults: EK3_POSNE_M_NSE, EK3_VELNE_M_NSE
+static const float NAV_GPS_POS_MIN_M = 0.5f;
+static const float NAV_GPS_VEL_MIN_MS = 0.3f;
+
+void AP_Ada::nav_sample()
+{
+    if (!_healthy || _nav_time.tripped()) {
+        return;
+    }
+    const AP_AHRS &ahrs = AP::ahrs();
+    const AP_InertialSensor &ins = AP::ins();
+    Vector3f da, dv;
+    float dta, dtv;
+    if (!ins.get_delta_angle(ahrs.get_primary_gyro_index(), da, dta) ||
+        !ins.get_delta_velocity(ahrs.get_primary_accel_index(), dv, dtv)) {
+        return;
+    }
+    _nav_imu.dangle += da;
+    _nav_imu.dvel += dv;
+    _nav_imu.dt_angle += dta;
+    _nav_imu.dt_vel += dtv;
+}
+
+void AP_Ada::nav_vio(const Vector3f &pos, float pos_err, uint8_t reset_counter, bool consumed)
+{
+    _nav_vio.ne = pos.xy();
+    _nav_vio.err = pos_err;
+    _nav_vio.reset_counter = reset_counter;
+    _nav_vio.consumed = consumed;
+    _nav_vio.ms = AP_HAL::millis();
+    _nav_vio.fresh = true;
+}
+
+void AP_Ada::nav_update()
+{
+    if (!_healthy || _nav_time.tripped()) {
+        return;
+    }
+    // timed for the main loop: what the shadow adds at AP_ADA_NAV_RATE_HZ
+    const uint32_t t0 = AP_HAL::micros();
+    if (_nav_started) {
+        nav_fuse();
+    } else {
+        nav_start();
+    }
+    timed(_nav_time, "nav", AP_HAL::micros() - t0);
+    nav_log();
+}
+
+// start at rest once the EKF has an origin and there is a position
+void AP_Ada::nav_start()
+{
+    const auto imu = _nav_imu;
+    _nav_imu = {};
+    if (imu.dt_vel <= 0) {
+        return;
+    }
+    const AP_AHRS &ahrs = AP::ahrs();
+    const Compass &compass = AP::compass();
+    const AP_Baro &baro = AP::baro();
+    const AP_GPS &gps = AP::gps();
+    Location origin;
+    if (!ahrs.get_origin(origin) || !compass.healthy() || !baro.healthy()) {
+        return;
+    }
+    const uint32_t now_ms = AP_HAL::millis();
+    const bool vio = _nav_vio.ms != 0 && now_ms - _nav_vio.ms < NAV_VIO_TIMEOUT_MS;
+    Vector2f ne;
+    if (vio) {
+        if (!_nav_vio.consumed) {
+            return;
+        }
+        ne = _nav_vio.ne;
+    } else if (gps.status() >= AP_GPS::GPS_OK_FIX_3D) {
+        ne = origin.get_distance_NE(gps.location());
+    } else {
+        return;
+    }
+
+    const cw_vec3_t accel = c_vec(imu.dvel / imu.dt_vel);
+    const cw_vec3_t mag = c_vec(compass.get_field());
+    const cw_vec3_t pos { double(ne.x), double(ne.y), -double(baro.get_altitude()) };
+    bool ok = false;
+    cw_nav_start(&accel, &mag, double(compass.get_declination()), &pos, &ok);
+    if (!ok) {
+        _nav_rejects++;
+        return;
+    }
+    _nav_started = true;
+    _nav_mag_us = compass.last_update_usec();
+    _nav_baro_ms = baro.get_last_update();
+    _nav_gps_ms = gps.last_fix_time_ms();
+    _nav_vio.fresh = false;
+    _nav_vio_reset_known = vio;
+    _nav_vio_reset = _nav_vio.reset_counter;
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Ada: nav started (%s)", vio ? "VIO" : "GPS");
+}
+
+void AP_Ada::nav_fuse()
+{
+    bool ok = false;
+
+    // predict over the IMU's interval since the last call, at its mean
+    // rate and specific force
+    const auto imu = _nav_imu;
+    _nav_imu = {};
+    if (imu.dt_angle > 0 && imu.dt_vel > 0) {
+        const uint8_t steps = uint8_t(ceilf(imu.dt_angle / NAV_MAX_STEP_S));
+        if (steps <= NAV_MAX_STEPS) {
+            const cw_vec3_t gyro = c_vec(imu.dangle / imu.dt_angle);
+            const cw_vec3_t accel = c_vec(imu.dvel / imu.dt_vel);
+            const double dt = double(imu.dt_angle) / steps;
+            for (uint8_t i = 0; i < steps; i++) {
+                cw_nav_predict(&gyro, &accel, dt, &ok);
+                if (!ok) {
+                    _nav_rejects++;
+                    break;
+                }
+            }
+        } else {
+            _nav_gaps++;
+        }
+    }
+
+    const Compass &compass = AP::compass();
+    const uint32_t mag_us = compass.last_update_usec();
+    if (compass.healthy() && mag_us - _nav_mag_us >= NAV_SLOW_SENSOR_MS * 1000U) {
+        _nav_mag_us = mag_us;
+        const cw_vec3_t mag = c_vec(compass.get_field());
+        cw_nav_fuse_mag(&mag, double(compass.get_declination()), &ok);
+        _nav_rejects += ok ? 0 : 1;
+    }
+
+    const AP_Baro &baro = AP::baro();
+    const uint32_t baro_ms = baro.get_last_update();
+    if (baro.healthy() && baro_ms - _nav_baro_ms >= NAV_SLOW_SENSOR_MS) {
+        _nav_baro_ms = baro_ms;
+        cw_nav_fuse_height(double(baro.get_altitude()), &ok);
+        _nav_rejects += ok ? 0 : 1;
+    }
+
+    const uint32_t now_ms = AP_HAL::millis();
+    if (_nav_vio.ms != 0 && now_ms - _nav_vio.ms < NAV_VIO_TIMEOUT_MS) {
+        // as the EKF: only the poses it was given; a new reset counter is
+        // the VIO's reset, taken as is
+        if (_nav_vio.fresh) {
+            _nav_vio.fresh = false;
+            if (_nav_vio.consumed) {
+                const bool reset = _nav_vio_reset_known && _nav_vio.reset_counter != _nav_vio_reset;
+                cw_nav_fuse_position(double(_nav_vio.ne.x), double(_nav_vio.ne.y),
+                                     double(_nav_vio.err), reset ? 1 : 0, &ok);
+                _nav_rejects += ok ? 0 : 1;
+            }
+            _nav_vio_reset = _nav_vio.reset_counter;
+            _nav_vio_reset_known = true;
+        }
+        return;
+    }
+
+    const AP_GPS &gps = AP::gps();
+    const uint32_t fix_ms = gps.last_fix_time_ms();
+    Location origin;
+    if (gps.status() < AP_GPS::GPS_OK_FIX_3D || fix_ms == _nav_gps_ms ||
+        !AP::ahrs().get_origin(origin)) {
+        return;
+    }
+    _nav_gps_ms = fix_ms;
+    float hacc = NAV_GPS_POS_MIN_M;
+    float sacc = NAV_GPS_VEL_MIN_MS;
+    UNUSED_RESULT(gps.horizontal_accuracy(hacc));
+    UNUSED_RESULT(gps.speed_accuracy(sacc));
+    const Vector2f ne = origin.get_distance_NE(gps.location());
+    cw_nav_fuse_position(double(ne.x), double(ne.y), double(MAX(hacc, NAV_GPS_POS_MIN_M)), 0, &ok);
+    _nav_rejects += ok ? 0 : 1;
+    const cw_vec3_t vel = c_vec(gps.velocity());
+    cw_nav_fuse_velocity(&vel, double(MAX(sacc, NAV_GPS_VEL_MIN_MS)), &ok);
+    _nav_rejects += ok ? 0 : 1;
+}
+
+void AP_Ada::nav_log()
+{
+#if HAL_LOGGING_ENABLED
+    const uint32_t now_ms = AP_HAL::millis();
+    if (_nav_started && now_ms - _nav_log_ms >= 100) {
+        _nav_log_ms = now_ms;
+        cw_nav_state_t st;
+        cw_nav_state(&st);
+        const AP_AHRS &ahrs = AP::ahrs();
+
+        // in the AHRS's (vehicle body) frame: AP_AHRS rotates EKF3's
+        // attitude by -AHRS_TRIM
+        Quaternion q(float(st.q.w), float(st.q.x), float(st.q.y), float(st.q.z));
+        q.rotate(-ahrs.get_trim());
+        float roll, pitch, yaw;
+        q.to_euler(roll, pitch, yaw);
+        const Vector3f vel(float(st.vel.x), float(st.vel.y), float(st.vel.z));
+        const Vector3f pos(float(st.pos.x), float(st.pos.y), float(st.pos.z));
+
+        // differences from the AHRS, NaN where it has none
+        float d_roll = NAN, d_pitch = NAN, d_yaw = NAN;
+        float d_vel = NAN, d_horiz = NAN, d_down = NAN;
+        Quaternion qa;
+        if (ahrs.get_quaternion(qa)) {
+            float r, p, y;
+            qa.to_euler(r, p, y);
+            d_roll = degrees(wrap_PI(roll - r));
+            d_pitch = degrees(wrap_PI(pitch - p));
+            d_yaw = degrees(wrap_PI(yaw - y));
+        }
+        Vector3f va;
+        if (ahrs.get_velocity_NED(va)) {
+            d_vel = (vel - va).length();
+        }
+        Vector3p pa;
+        if (ahrs.get_relative_position_NED_origin(pa)) {
+            const Vector3f d = pos - pa.tofloat();
+            d_horiz = d.xy().length();
+            d_down = d.z;
+        }
+
+// @LoggerMessage: ADAN
+// @Description: Ada/SPARK navigation filter (CW_Nav.INS) in shadow, compared with the AHRS (EKF3)
+// @Field: TimeUS: Time since system startup
+// @Field: Roll: Ada filter roll, vehicle body (AHRS_TRIM applied as the AHRS does)
+// @Field: Pitch: Ada filter pitch
+// @Field: Yaw: Ada filter yaw
+// @Field: VN: Ada filter velocity north
+// @Field: VE: Ada filter velocity east
+// @Field: VD: Ada filter velocity down
+// @Field: PN: Ada filter position north of the EKF origin
+// @Field: PE: Ada filter position east of the EKF origin
+// @Field: PD: Ada filter position down from the EKF origin
+// @Field: dR: Ada roll minus AHRS roll
+// @Field: dP: Ada pitch minus AHRS pitch
+// @Field: dY: Ada yaw minus AHRS yaw
+// @Field: dV: length of the velocity difference from the AHRS
+// @Field: dH: horizontal distance from the AHRS position
+// @Field: dD: Ada down position minus AHRS down position
+        AP::logger().Write("ADAN", "TimeUS,Roll,Pitch,Yaw,VN,VE,VD,PN,PE,PD,dR,dP,dY,dV,dH,dD",
+                           "sdddnnnmmmdddnmm", "F000000000000000", "Qfffffffffffffff",
+                           AP_HAL::micros64(), degrees(roll), degrees(pitch), wrap_360(degrees(yaw)),
+                           vel.x, vel.y, vel.z, pos.x, pos.y, pos.z,
+                           d_roll, d_pitch, d_yaw, d_vel, d_horiz, d_down);
+    }
+
+    if (now_ms - _nav_time_log_ms < 1000) {
+        return;
+    }
+    _nav_time_log_ms = now_ms;
+    cw_nav_state_t st;
+    cw_nav_state(&st);
+    const uint32_t *c = st.counters;
+
+// @LoggerMessage: ADNT
+// @Description: Ada/SPARK navigation filter in shadow: measurements used and rejected (since it started), time spent
+// @Field: TimeUS: Time since system startup
+// @Field: PU: positions fused
+// @Field: PR: positions rejected by the innovation gate
+// @Field: VU: velocities fused (GPS)
+// @Field: VR: velocities rejected
+// @Field: HU: barometer heights fused
+// @Field: HR: barometer heights rejected
+// @Field: MU: magnetometer samples fused
+// @Field: MR: magnetometer samples rejected
+// @Field: Rst: position source resets taken
+// @Field: Gap: IMU intervals dropped as too long to predict over
+// @Field: Rej: inputs the Ada filter refused (NaN, out of range, not started)
+// @Field: TT: time spent in the Ada filter in this interval
+// @Field: TMx: longest single nav_update in this interval
+// @Field: Ovr: nav_update calls over the time budget (AP_ADA_NAV_BUDGET_US) in this interval
+// @Field: Off: 1 once the navigation shadow is switched off after AP_ADA_TRIP_OVERRUNS overruns since boot
+    AP::logger().Write("ADNT", "TimeUS,PU,PR,VU,VR,HU,HR,MU,MR,Rst,Gap,Rej,TT,TMx,Ovr,Off",
+                       "s-----------ss--", "F-----------FF--", "QIIIIIIIIIIIIIIB",
+                       AP_HAL::micros64(),
+                       c[CW_NAV_POSITION_USED], c[CW_NAV_POSITION_REJECTED],
+                       c[CW_NAV_VELOCITY_USED], c[CW_NAV_VELOCITY_REJECTED],
+                       c[CW_NAV_HEIGHT_USED], c[CW_NAV_HEIGHT_REJECTED],
+                       c[CW_NAV_MAG_USED], c[CW_NAV_MAG_REJECTED],
+                       c[CW_NAV_POSITION_RESETS], _nav_gaps, _nav_rejects,
+                       _nav_time.sum_us(), _nav_time.max_us(), _nav_time.overruns(),
+                       uint8_t(_nav_time.tripped()));
+    _nav_time.new_interval();
+#endif
 }
 
 #endif  // AP_ADA_ENABLED

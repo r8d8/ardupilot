@@ -625,6 +625,9 @@ const AP_Scheduler::Task AP_Vehicle::scheduler_tasks[] = {
 #if HAL_GYROFFT_ENABLED
     FAST_TASK_CLASS(AP_GyroFFT,    &vehicle.gyro_fft,       sample_gyros),
 #endif
+#if AP_ADA_ENABLED
+    FAST_TASK_CLASS(AP_Ada,        &vehicle.ada,            nav_sample),
+#endif
 #if AP_AIRSPEED_ENABLED
     SCHED_TASK_CLASS(AP_Airspeed,  &vehicle.airspeed,       update,                   10, 100, 41),    // NOTE: the priority number here should be right before Plane's calc_airspeed_errors
 #endif
@@ -704,6 +707,7 @@ const AP_Scheduler::Task AP_Vehicle::scheduler_tasks[] = {
     SCHED_TASK(update_arming,          1,     50, 253),
 #if AP_ADA_ENABLED
     SCHED_TASK_CLASS(AP_Ada,       &vehicle.ada,            update,                   10,  50, 254),
+    SCHED_TASK_CLASS(AP_Ada,       &vehicle.ada,            nav_update, AP_ADA_NAV_RATE_HZ, 400, 254),
 #endif
 #endif
 };

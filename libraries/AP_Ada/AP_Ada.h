@@ -7,6 +7,7 @@
 #include "AP_Ada_CallTimer.h"
 
 #include <AP_Common/AP_Common.h>
+#include <AP_Math/AP_Math.h>
 #include <stdint.h>
 #include <cw_fcs.h>
 
@@ -20,8 +21,10 @@
   - ADA:  quaternion rotation against AP_Math
   - ADAU: the UBX parser against AP_GPS_UBLOX, NAV-PVT by NAV-PVT
   - ADAS: the swashplate mixer against AP_MotorsHeli_Swash, servo by servo
-  The UBX and swashplate calls are timed (AP_Ada_CallTimer); a shadow whose
-  calls overrun their budget too often is switched off (HZ-19, HZ-20).
+  - ADAN, ADNT: the navigation filter (CW_Nav.INS) against the AHRS (EKF3)
+  The UBX, swashplate and navigation calls are timed (AP_Ada_CallTimer); a
+  shadow whose calls overrun their budget too often is switched off (HZ-19,
+  HZ-20; the same for the navigation shadow).
  */
 class AP_Ada {
 public:
@@ -51,6 +54,17 @@ public:
     void swash_configure(uint8_t instance, const cw_swash_config_t &cfg);
     void swash_check(uint8_t instance, float roll, float pitch, float collective,
                      const bool enabled[4], const float output[4]);
+
+    // navigation shadow: nav_sample, every loop (a fast task), adds up the
+    // IMU's delta angles and velocities; nav_update (AP_ADA_NAV_RATE_HZ)
+    // predicts with them, fuses the sensors that have new data and
+    // compares with the AHRS
+    void nav_sample();
+    void nav_update();
+
+    // called by AP_VisualOdom_MAV with every pose, rotated and corrected
+    // as the EKF gets it; consumed: the EKF was given it (quality)
+    void nav_vio(const Vector3f &pos, float pos_err, uint8_t reset_counter, bool consumed);
 
 private:
     static AP_Ada *_singleton;
@@ -88,6 +102,38 @@ private:
     bool _swash_mismatch_reported;
     // calls of the Ada mixer
     AP_Ada_CallTimer _swash_time{AP_ADA_SWASH_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
+
+    // navigation shadow
+    struct {
+        Vector3f dangle;    // rad, since the last predict
+        Vector3f dvel;      // m/s
+        float dt_angle;     // s
+        float dt_vel;
+    } _nav_imu;
+    struct {
+        Vector2f ne;        // m, NED from the origin
+        float err;          // m
+        uint32_t ms;        // when it came, 0: none yet
+        uint8_t reset_counter;
+        bool consumed;
+        bool fresh;         // not yet fused
+    } _nav_vio;
+    bool _nav_vio_reset_known;
+    uint8_t _nav_vio_reset;
+    uint32_t _nav_mag_us;   // last compass sample fused
+    uint32_t _nav_baro_ms;  // last baro sample fused
+    uint32_t _nav_gps_ms;   // last GPS fix fused
+    uint32_t _nav_gaps;     // IMU intervals dropped (longer than a predict step)
+    uint32_t _nav_rejects;  // inputs the Ada filter refused
+    bool _nav_started;
+    uint32_t _nav_log_ms;
+    uint32_t _nav_time_log_ms;
+    // calls of nav_update that reach the Ada filter
+    AP_Ada_CallTimer _nav_time{AP_ADA_NAV_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
+
+    void nav_start();
+    void nav_fuse();
+    void nav_log();
 
     // count one timed call; report the first overrun and the trip
     void timed(AP_Ada_CallTimer &timer, const char *name, uint32_t dt_us);
