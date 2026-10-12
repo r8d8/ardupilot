@@ -160,7 +160,9 @@ PA5 VDD_5V_SENS ADC1 SCALE(2)
 #PC4 FMU_SERVORAIL_VCC_SENS ADC1 SCALE(1)
 
 # define default battery setup
-define HAL_BATT_MONITOR_DEFAULT 4
+# Clearwater: the battery is read over DroneCAN (BatteryInfo from the HCU),
+# the analog monitor is not built (see the end of this file)
+define HAL_BATT_MONITOR_DEFAULT 8
 define HAL_BATT_VOLT_PIN 7
 define HAL_BATT_CURR_PIN 8
 define HAL_BATT_VOLT_SCALE 21
@@ -289,3 +291,39 @@ define AP_BOOTLOADER_FLASHING_ENABLED 0
 
 define EK3_FEATURE_POSITION_RESET 1
 #define AP_NETWORKING_BACKEND_PPP 1
+
+# ---------------------------------------------------------------------
+# Clearwater: features the aircraft (Goblin 580, stage 1.1) and the HITL
+# bench do not use, left out to free flash for the Ada/SPARK navigation
+# filter (user, 2026-10-12). Measured with fcs/tools/flash_report.py.
+
+# RC telemetry other than CRSF
+define AP_FRSKY_TELEM_ENABLED 0
+define HAL_HOTT_TELEM_ENABLED 0
+define HAL_SPEKTRUM_TELEM_ENABLED 0
+define AP_LTM_TELEM_ENABLED 0
+define AP_GHST_TELEM_ENABLED 0
+define AP_IBUS_TELEM_ENABLED 0
+
+# battery monitors: only DroneCAN BatteryInfo is fitted (the sum, ESC,
+# scripting and Torqeedo monitors stay: they build on other drivers)
+define AP_BATTERY_ANALOG_ENABLED 0
+define AP_BATTERY_SYNTHETIC_CURRENT_ENABLED 0
+define AP_BATTERY_FUELLEVEL_ANALOG_ENABLED 0
+define AP_BATTERY_FUELLEVEL_PWM_ENABLED 0
+define AP_BATTERY_FUELFLOW_ENABLED 0
+define AP_BATTERY_AD7091R5_ENABLED 0
+define AP_BATTERY_BEBOP_ENABLED 0
+define AP_BATTERY_GENERATOR_ENABLED 0
+define AP_BATTERY_INA239_ENABLED 0
+define AP_BATTERY_INA2XX_ENABLED 0
+define AP_BATTERY_INA3221_ENABLED 0
+define AP_BATTERY_LTC2946_ENABLED 0
+define AP_BATTERY_SMBUS_ENABLED 0
+define AP_BATTERY_TIBQ76952_ENABLED 0
+
+# ESCs and peripherals not fitted
+define AP_PICCOLOCAN_ENABLED 0
+define AP_FETTEC_ONEWIRE_ENABLED 0
+define AP_VIDEOTX_ENABLED 0
+define AC_PRECLAND_ENABLED 0
