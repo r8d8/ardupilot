@@ -34,6 +34,7 @@
 #include <SITL/SIM_RF_LeddarOne.h>
 #include <SITL/SIM_RF_LightWareSerialBinary.h>
 #include <SITL/SIM_RF_LightWareSerial.h>
+#include <SITL/SIM_RF_LightWareSerialLW20.h>
 #include <SITL/SIM_RF_MAVLink.h>
 #include <SITL/SIM_RF_MaxsonarSerialLV.h>
 #include <SITL/SIM_RF_NMEA.h>
@@ -65,6 +66,7 @@ static const struct {
     { "leddarone", SITL::RF_LeddarOne::create },
     { "lightwareserial-binary", SITL::RF_LightWareSerialBinary::create },
     { "lightwareserial", SITL::RF_LightWareSerial::create },
+    { "lw20", SITL::RF_LightWareSerialLW20::create },  // Clearwater: LW20 text commands, HZ-22
     { "lightware_grf", SITL::RF_LightWareGRF::create },
     { "maxsonarseriallv", SITL::RF_MaxsonarSerialLV::create },
     { "nmea", SITL::RF_NMEA::create },
