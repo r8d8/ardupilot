@@ -25,11 +25,102 @@ extern const AP_HAL::HAL& hal;
 #define LIGHTWARE_DIST_MAX_CM           10000
 #define LIGHTWARE_OUT_OF_RANGE_ADD_CM   100
 
+const AP_Param::GroupInfo AP_RangeFinder_LightWareSerial::var_info[] = {
+
+    // @Param: LW_ST
+    // @DisplayName: LightWare LW20 minimum return strength
+    // @Description: Above 0 the driver queries the LW20 with its text commands for the last-return distance and its signal strength, and distances whose strength is below this are not used, so a weak spurious return is not taken as the ground. The strength is logged as RFND Quality. 0 keeps the legacy protocol (no strength).
+    // @Units: %
+    // @Range: 0 100
+    // @User: Advanced
+    AP_GROUPINFO("LW_ST", 40, AP_RangeFinder_LightWareSerial, min_signal_pct, 0),
+
+    AP_GROUPEND
+};
+
+AP_RangeFinder_LightWareSerial::AP_RangeFinder_LightWareSerial(RangeFinder::RangeFinder_State &_state,
+                                                               AP_RangeFinder_Params &_params) :
+    AP_RangeFinder_Backend_Serial(_state, _params)
+{
+    AP_Param::setup_object_defaults(this, var_info);
+    state.var_info = var_info;
+}
+
+// text protocol (LW20 command set): read the replies to the last
+// queries, then ask again
+bool AP_RangeFinder_LightWareSerial::get_reading_text(float &reading_m)
+{
+    float sum = 0;
+    uint16_t valid_count = 0;
+    uint16_t lost_count = 0;
+
+    for (auto i=0; i<8192; i++) {
+        uint8_t c;
+        if (!uart->read(c)) {
+            break;
+        }
+        if (c != '\r' && c != '\n') {
+            if (textbuf_len < sizeof(textbuf) - 1) {
+                textbuf[textbuf_len++] = c;
+            } else {
+                // too long, discard the line
+                textbuf_len = 0;
+            }
+            continue;
+        }
+        textbuf[textbuf_len] = 0;
+        if (strncmp(textbuf, "ldl,1:", 6) == 0) {
+            // "-1.00" is the sensor's lost-signal reply
+            text_distance_m = strtof(&textbuf[6], nullptr);
+            text_lost_signal = is_negative(text_distance_m);
+            text_distance_pending = true;
+        } else if (strncmp(textbuf, "lhl:", 4) == 0 && text_distance_pending) {
+            text_strength_pct = int8_t(constrain_int32(atoi(&textbuf[4]), 0, 100));
+            text_distance_pending = false;
+            if (text_lost_signal) {
+                lost_count++;
+            } else if (text_strength_pct >= min_signal_pct) {
+                sum += text_distance_m;
+                valid_count++;
+            }
+            // weaker than LW_ST: not a reading
+        }
+        textbuf_len = 0;
+    }
+
+    const uint32_t now = AP_HAL::millis();
+    if (last_init_ms == 0 ||
+        (now - last_init_ms > 1000 &&
+         now - state.last_reading_ms > 1000)) {
+        // serial mode, as for the legacy protocol
+        uart->write("www\r\n");
+        last_init_ms = now;
+    } else {
+        uart->write("?LDL,1\r\n?LHL\r\n");
+    }
+
+    if (valid_count > 0) {
+        reading_m = sum / valid_count;
+        no_signal = false;
+        return true;
+    }
+    if (lost_count > 0) {
+        reading_m = MAX(LIGHTWARE_DIST_MAX_CM, max_distance()*100 + LIGHTWARE_OUT_OF_RANGE_ADD_CM) * 0.01f;
+        no_signal = true;
+        return true;
+    }
+    return false;
+}
+
 // read - return last value measured by sensor
 bool AP_RangeFinder_LightWareSerial::get_reading(float &reading_m)
 {
     if (uart == nullptr) {
         return false;
+    }
+
+    if (text_mode()) {
+        return get_reading_text(reading_m);
     }
 
     float sum = 0;              // sum of all readings taken
