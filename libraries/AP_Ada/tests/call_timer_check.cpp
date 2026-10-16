@@ -6,7 +6,9 @@
     /tmp/call_timer_check
 
   Known result: all checks pass, among them a p99 of 3 us for 990 calls of
-  2 or 3 us plus 10 of 500 us, and a trip on the 10th call over budget.
+  2 or 3 us plus 10 of 500 us, a trip on the 10th call over budget, and
+  with INTERVAL_P99 no trip from 50 long calls among fast ones but a trip
+  on the third interval over budget in a row.
  */
 #include "AP_Ada_CallTimer.h"
 
@@ -75,6 +77,46 @@ int main()
     t.new_interval();
     check("new interval: statistics cleared, trip kept",
           t.calls() == 0 && t.max_us() == 0 && t.overruns() == 0 && t.tripped());
+
+    // INTERVAL_P99 (a preemptible thread): single long calls do not trip it
+    using Judge = AP_Ada_CallTimer::Judge;
+    AP_Ada_CallTimer c(100, 3, Judge::INTERVAL_P99);
+    for (int k = 0; k < 5; k++) {
+        for (int i = 0; i < 990; i++) {
+            c.add(12);
+        }
+        for (int i = 0; i < 10; i++) {
+            c.add(1100);     // preempted by the main loop
+        }
+        c.new_interval();
+    }
+    check("INTERVAL_P99: 50 calls over budget in 5 s with p99 12 us do not trip",
+          c.overruns_total() == 50 && !c.tripped());
+    for (int k = 0; k < 2; k++) {
+        for (int i = 0; i < 100; i++) {
+            c.add(150);
+        }
+        c.new_interval();
+    }
+    check("INTERVAL_P99: two intervals over budget in a row do not trip yet", !c.tripped());
+    for (int i = 0; i < 100; i++) {
+        c.add(12);
+    }
+    c.new_interval();
+    for (int k = 0; k < 2; k++) {
+        for (int i = 0; i < 100; i++) {
+            c.add(150);
+        }
+        c.new_interval();
+    }
+    check("INTERVAL_P99: a good interval in between starts the count again", !c.tripped());
+    for (int i = 0; i < 100; i++) {
+        c.add(150);
+    }
+    c.new_interval();
+    check("INTERVAL_P99: the third interval over budget in a row trips", c.tripped());
+    c.new_interval();
+    check("INTERVAL_P99: an empty interval keeps the trip", c.tripped());
 
     std::printf(failures ? "%d failure(s)\n" : "all AP_Ada_CallTimer checks passed\n", failures);
     return failures ? 1 : 0;

@@ -16,14 +16,31 @@
   slow Ada path can delay the vehicle's loop at most trip_after times. A
   call that never returns is caught by the hardware watchdog, not here.
 
+  A shadow in a thread that higher-priority threads preempt (CRSF in the
+  RC input thread on ChibiOS) is judged by intervals instead
+  (INTERVAL_P99): a call's wall time there includes the threads that ran
+  in the middle of it, so a single call over the budget says little. The
+  timer trips once trip_after intervals in a row have their 99th
+  percentile over the budget; calls over it are still counted for the log.
+
   Plain C++ without HAL, so tests/call_timer_check.cpp runs it on the host.
  */
 class AP_Ada_CallTimer {
 public:
-    AP_Ada_CallTimer(uint32_t budget_us, uint16_t trip_after) :
+    enum class Judge : uint8_t {
+        EACH_CALL,      // trip after trip_after calls over the budget
+        INTERVAL_P99,   // trip after trip_after intervals over it in a row
+    };
+
+    AP_Ada_CallTimer(uint32_t budget_us, uint16_t trip_after,
+                     Judge judge = Judge::EACH_CALL) :
         _budget_us(budget_us),
         _trip_after(trip_after),
-        _overruns_total(0)
+        _judge(judge),
+        _overruns_total(0),
+        _intervals_over(0),
+        _tripped(false),
+        _calls(0)
     {
         new_interval();
     }
@@ -44,10 +61,13 @@ public:
         if (_overruns_total < UINT16_MAX) {
             _overruns_total++;
         }
+        if (_judge == Judge::EACH_CALL && _overruns_total >= _trip_after) {
+            _tripped = true;
+        }
         return true;
     }
 
-    bool tripped() const { return _overruns_total >= _trip_after; }
+    bool tripped() const { return _tripped; }
 
     uint32_t budget_us() const { return _budget_us; }
     uint16_t overruns_total() const { return _overruns_total; }
@@ -78,8 +98,21 @@ public:
         return _max_us;
     }
 
+    // end this interval (with INTERVAL_P99, judge it first) and start the next
     void new_interval()
     {
+        if (_judge == Judge::INTERVAL_P99 && _calls > 0) {
+            if (percentile_us(99) > _budget_us) {
+                if (_intervals_over < UINT16_MAX) {
+                    _intervals_over++;
+                }
+                if (_intervals_over >= _trip_after) {
+                    _tripped = true;
+                }
+            } else {
+                _intervals_over = 0;
+            }
+        }
         for (uint8_t i = 0; i < BINS; i++) {
             _bins[i] = 0;
         }
@@ -119,7 +152,10 @@ private:
 
     const uint32_t _budget_us;
     const uint16_t _trip_after;
+    const Judge _judge;
     uint16_t _overruns_total;
+    uint16_t _intervals_over;   // INTERVAL_P99: intervals over the budget in a row
+    bool _tripped;
 
     uint32_t _bins[BINS];
     uint32_t _calls;
