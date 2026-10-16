@@ -297,8 +297,12 @@ define EK3_FEATURE_POSITION_RESET 1
 # bench do not use, left out to free flash for the Ada/SPARK navigation
 # filter (user, 2026-10-12). Measured with fcs/tools/flash_report.py.
 
-# RC telemetry other than CRSF
-define AP_FRSKY_TELEM_ENABLED 0
+# RC telemetry other than CRSF. CRSF telemetry is built on the FrSky
+# S.Port passthrough encoder (HAL_CRSF_TELEM_ENABLED needs
+# AP_FRSKY_SPORT_PASSTHROUGH_ENABLED), so that stays; the FrSky D protocol
+# and the bidirectional S.Port link go
+define AP_FRSKY_D_TELEM_ENABLED 0
+define HAL_WITH_FRSKY_TELEM_BIDIRECTIONAL 0
 define HAL_HOTT_TELEM_ENABLED 0
 define HAL_SPEKTRUM_TELEM_ENABLED 0
 define AP_LTM_TELEM_ENABLED 0
