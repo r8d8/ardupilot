@@ -327,3 +327,9 @@ define AP_PICCOLOCAN_ENABLED 0
 define AP_FETTEC_ONEWIRE_ENABLED 0
 define AP_VIDEOTX_ENABLED 0
 define AC_PRECLAND_ENABLED 0
+
+# Clearwater: features the aircraft need that hardware builds leave out.
+# AUTOROTATE (mode 26): lua/heli_engine_out.lua switches to it above
+# EOD_AROT_ALT and lets ArduPilot fly the entry and glide; ArduCopter's
+# config.h builds it only for SITL heli (bench H7, 2026-10-15)
+define MODE_AUTOROTATE_ENABLED 1
