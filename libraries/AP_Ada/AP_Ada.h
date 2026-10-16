@@ -135,15 +135,16 @@ private:
         // events since the main thread last looked
         const char *mismatch; // the first mismatch (reported once)
         uint8_t mismatch_type;
-        uint32_t overrun_us;  // the first overrun, 0: none
         bool trip;            // the shadow has just switched off
     };
     // RC input thread only
     CrsfCounts _crsf;
     uint32_t _crsf_roll_ms;
     bool _crsf_mismatch_seen;
-    // calls of crsf_feed, one per byte
-    AP_Ada_CallTimer _crsf_time{AP_ADA_CRSF_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
+    // calls of crsf_feed, one per byte; judged by the interval's 99th
+    // percentile, as the RC input thread is preempted by higher ones
+    AP_Ada_CallTimer _crsf_time{AP_ADA_CRSF_BUDGET_US, AP_ADA_CRSF_TRIP_INTERVALS,
+                                AP_Ada_CallTimer::Judge::INTERVAL_P99};
     // shared, under _crsf_sem
     CrsfSnapshot _crsf_pub;
     HAL_Semaphore _crsf_sem;
@@ -178,12 +179,38 @@ private:
     bool _nav_started;
     uint32_t _nav_log_ms;
     uint32_t _nav_time_log_ms;
+    bool _nav_final_logged;
+    // a GPS fix held until fused (one measurement per nav_update)
+    struct {
+        Vector2f ne;          // m, NED from the origin
+        float pos_sigma;      // m
+        Vector3f vel;         // m/s, NED
+        float vel_sigma;      // m/s
+        bool position_pending;
+        bool velocity_pending;
+    } _nav_gps;
+    // the measurement whose turn comes first in the next nav_update:
+    // 0 position, 1 velocity, 2 magnetometer, 3 barometer
+    static const uint8_t NAV_MEASUREMENTS = 4;
+    uint8_t _nav_turn;
+    // the parts of nav_update, for ADNP: longest call and calls this interval
+    enum NavPart : uint8_t {
+        NAV_PREDICT, NAV_POSITION, NAV_VELOCITY, NAV_MAG, NAV_HEIGHT, NAV_START, NAV_PARTS
+    };
+    struct {
+        uint32_t max_us[NAV_PARTS];
+        uint16_t n[NAV_PARTS];
+        uint8_t max_steps;
+    } _nav_parts;
     // calls of nav_update that reach the Ada filter
     AP_Ada_CallTimer _nav_time{AP_ADA_NAV_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
 
     void nav_start();
     void nav_fuse();
+    void nav_take_gps();
+    void nav_part(NavPart part, uint32_t t0_us);
     void nav_log();
+    void nav_log_stats();
 
     // count one timed call; report the first overrun and the trip
     void timed(AP_Ada_CallTimer &timer, const char *name, uint32_t dt_us);

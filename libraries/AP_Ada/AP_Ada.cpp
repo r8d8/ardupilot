@@ -160,20 +160,15 @@ void AP_Ada::crsf_report()
         WITH_SEMAPHORE(_crsf_sem);
         s = _crsf_pub;
         _crsf_pub.mismatch = nullptr;
-        _crsf_pub.overrun_us = 0;
         _crsf_pub.trip = false;
     }
     if (s.mismatch != nullptr) {
         GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: CRSF frame 0x%02x differs: %s",
                       unsigned(s.mismatch_type), s.mismatch);
     }
-    if (s.overrun_us != 0) {
-        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: CRSF call took %u us, budget %u us",
-                      unsigned(s.overrun_us), unsigned(AP_ADA_CRSF_BUDGET_US));
-    }
     if (s.trip) {
-        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: CRSF shadow off after %u calls over %u us",
-                      unsigned(AP_ADA_TRIP_OVERRUNS), unsigned(AP_ADA_CRSF_BUDGET_US));
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: CRSF shadow off after %u s with p99 over %u us",
+                      unsigned(AP_ADA_CRSF_TRIP_INTERVALS), unsigned(AP_ADA_CRSF_BUDGET_US));
     }
     if (s.seq == _crsf_logged_seq) {
         return;
@@ -195,8 +190,8 @@ void AP_Ada::crsf_report()
 // @Field: FT: time spent in the Ada parser in this interval (sum of 1 us tick differences)
 // @Field: FMx: longest single call of the Ada parser in this interval
 // @Field: FP: 99th percentile of the Ada parser's call times in this interval (upper edge of its histogram bin, at most FMx)
-// @Field: Ovr: Ada parser calls over the time budget (AP_ADA_CRSF_BUDGET_US) in this interval
-// @Field: Off: 1 once the CRSF shadow is switched off after AP_ADA_TRIP_OVERRUNS overruns since boot
+// @Field: Ovr: Ada parser calls over the time budget (AP_ADA_CRSF_BUDGET_US) in this interval, counted only: the RC input thread is preempted in the middle of calls
+// @Field: Off: 1 once the CRSF shadow is switched off: FP over the budget AP_ADA_CRSF_TRIP_INTERVALS intervals in a row
     const CrsfCounts &c = s.counts;
     AP::logger().Write("ADAC", "TimeUS,FAP,FAda,RC,Mat,Mis,Sub,CRC,Byt,FT,FMx,FP,Ovr,Off",
                        "s--------sss--", "F--------FFF--", "QIIIIIIIIIIIIB",
@@ -393,22 +388,15 @@ void AP_Ada::crsf_feed(uint8_t byte, uint32_t now_us)
         } else if (status == CW_CRSF_STATUS_CRC) {
             _crsf.crc_errors++;
         }
-        const uint32_t dt = AP_HAL::micros() - t0;
-        if (_crsf_time.add(dt)) {
-            WITH_SEMAPHORE(_crsf_sem);
-            if (_crsf_time.overruns_total() == 1) {
-                _crsf_pub.overrun_us = MAX(dt, 1U);
-            }
-            if (_crsf_time.tripped()) {
-                _crsf_pub.trip = true;
-            }
-        }
+        // a call over the budget is only counted: this thread is preempted
+        // in the middle of calls, the interval decides (crsf_publish)
+        UNUSED_RESULT(_crsf_time.add(AP_HAL::micros() - t0));
     }
     crsf_publish();
 }
 
 // once a second, in the RC input thread: the interval's counts and times
-// to the snapshot, and a new interval
+// to the snapshot, then the interval judged (INTERVAL_P99) and a new one
 void AP_Ada::crsf_publish()
 {
     const uint32_t now_ms = AP_HAL::millis();
@@ -428,7 +416,12 @@ void AP_Ada::crsf_publish()
         _crsf_pub.seq++;
     }
     _crsf = {};
+    const bool was_tripped = _crsf_time.tripped();
     _crsf_time.new_interval();
+    if (_crsf_time.tripped() && !was_tripped) {
+        WITH_SEMAPHORE(_crsf_sem);
+        _crsf_pub.trip = true;
+    }
 }
 
 // CRSF frame types (AP_CRSF_Protocol)
@@ -546,7 +539,15 @@ void AP_Ada::nav_vio(const Vector3f &pos, float pos_err, uint8_t reset_counter, 
 
 void AP_Ada::nav_update()
 {
-    if (!_healthy || _nav_time.tripped()) {
+    if (!_healthy) {
+        return;
+    }
+    if (_nav_time.tripped()) {
+        // the last interval's records, with Off set, once
+        if (!_nav_final_logged) {
+            _nav_final_logged = true;
+            nav_log_stats();
+        }
         return;
     }
     // timed for the main loop: what the shadow adds at AP_ADA_NAV_RATE_HZ
@@ -558,6 +559,14 @@ void AP_Ada::nav_update()
     }
     timed(_nav_time, "nav", AP_HAL::micros() - t0);
     nav_log();
+}
+
+// one Ada call of a part of nav_update, for ADNP
+void AP_Ada::nav_part(NavPart part, uint32_t t0_us)
+{
+    const uint32_t dt = AP_HAL::micros() - t0_us;
+    _nav_parts.max_us[part] = MAX(_nav_parts.max_us[part], dt);
+    _nav_parts.n[part]++;
 }
 
 // start at rest once the EKF has an origin and there is a position
@@ -594,7 +603,9 @@ void AP_Ada::nav_start()
     const cw_vec3_t mag = c_vec(compass.get_field());
     const cw_vec3_t pos { double(ne.x), double(ne.y), -double(baro.get_altitude()) };
     bool ok = false;
+    const uint32_t t0 = AP_HAL::micros();
     cw_nav_start(&accel, &mag, double(compass.get_declination()), &pos, &ok);
+    nav_part(NAV_START, t0);
     if (!ok) {
         _nav_rejects++;
         return;
@@ -603,6 +614,7 @@ void AP_Ada::nav_start()
     _nav_mag_us = compass.last_update_usec();
     _nav_baro_ms = baro.get_last_update();
     _nav_gps_ms = gps.last_fix_time_ms();
+    _nav_gps = {};
     _nav_vio.fresh = false;
     _nav_vio_reset_known = vio;
     _nav_vio_reset = _nav_vio.reset_counter;
@@ -623,6 +635,8 @@ void AP_Ada::nav_fuse()
             const cw_vec3_t gyro = c_vec(imu.dangle / imu.dt_angle);
             const cw_vec3_t accel = c_vec(imu.dvel / imu.dt_vel);
             const double dt = double(imu.dt_angle) / steps;
+            _nav_parts.max_steps = MAX(_nav_parts.max_steps, steps);
+            const uint32_t t0 = AP_HAL::micros();
             for (uint8_t i = 0; i < steps; i++) {
                 cw_nav_predict(&gyro, &accel, dt, &ok);
                 if (!ok) {
@@ -630,46 +644,88 @@ void AP_Ada::nav_fuse()
                     break;
                 }
             }
+            nav_part(NAV_PREDICT, t0);
         } else {
             _nav_gaps++;
         }
     }
 
-    const Compass &compass = AP::compass();
-    const uint32_t mag_us = compass.last_update_usec();
-    if (compass.healthy() && mag_us - _nav_mag_us >= NAV_SLOW_SENSOR_MS * 1000U) {
-        _nav_mag_us = mag_us;
-        const cw_vec3_t mag = c_vec(compass.get_field());
-        cw_nav_fuse_mag(&mag, double(compass.get_declination()), &ok);
-        _nav_rejects += ok ? 0 : 1;
-    }
-
-    const AP_Baro &baro = AP::baro();
-    const uint32_t baro_ms = baro.get_last_update();
-    if (baro.healthy() && baro_ms - _nav_baro_ms >= NAV_SLOW_SENSOR_MS) {
-        _nav_baro_ms = baro_ms;
-        cw_nav_fuse_height(double(baro.get_altitude()), &ok);
-        _nav_rejects += ok ? 0 : 1;
-    }
-
+    // what has new data
     const uint32_t now_ms = AP_HAL::millis();
-    if (_nav_vio.ms != 0 && now_ms - _nav_vio.ms < NAV_VIO_TIMEOUT_MS) {
-        // as the EKF: only the poses it was given; a new reset counter is
-        // the VIO's reset, taken as is
-        if (_nav_vio.fresh) {
-            _nav_vio.fresh = false;
-            if (_nav_vio.consumed) {
-                const bool reset = _nav_vio_reset_known && _nav_vio.reset_counter != _nav_vio_reset;
-                cw_nav_fuse_position(double(_nav_vio.ne.x), double(_nav_vio.ne.y),
-                                     double(_nav_vio.err), reset ? 1 : 0, &ok);
+    const bool vio = _nav_vio.ms != 0 && now_ms - _nav_vio.ms < NAV_VIO_TIMEOUT_MS;
+    if (!vio) {
+        nav_take_gps();
+    }
+    const Compass &compass = AP::compass();
+    const AP_Baro &baro = AP::baro();
+    const bool ready[NAV_MEASUREMENTS] = {
+        vio ? _nav_vio.fresh : _nav_gps.position_pending,
+        !vio && _nav_gps.velocity_pending,
+        compass.healthy() && compass.last_update_usec() - _nav_mag_us >= NAV_SLOW_SENSOR_MS * 1000U,
+        baro.healthy() && baro.get_last_update() - _nav_baro_ms >= NAV_SLOW_SENSOR_MS,
+    };
+
+    // then at most one measurement, so that a call is one predict and one
+    // update; the others wait for the next calls (10 ms each), in turns
+    for (uint8_t k = 0; k < NAV_MEASUREMENTS; k++) {
+        const uint8_t m = (_nav_turn + k) % NAV_MEASUREMENTS;
+        if (!ready[m]) {
+            continue;
+        }
+        _nav_turn = (m + 1) % NAV_MEASUREMENTS;
+        const uint32_t t0 = AP_HAL::micros();
+        switch (m) {
+        case 0:
+            if (vio) {
+                // as the EKF: only the poses it was given; a new reset
+                // counter is the VIO's reset, taken as is
+                _nav_vio.fresh = false;
+                if (_nav_vio.consumed) {
+                    const bool reset = _nav_vio_reset_known && _nav_vio.reset_counter != _nav_vio_reset;
+                    cw_nav_fuse_position(double(_nav_vio.ne.x), double(_nav_vio.ne.y),
+                                         double(_nav_vio.err), reset ? 1 : 0, &ok);
+                    _nav_rejects += ok ? 0 : 1;
+                }
+                _nav_vio_reset = _nav_vio.reset_counter;
+                _nav_vio_reset_known = true;
+            } else {
+                _nav_gps.position_pending = false;
+                cw_nav_fuse_position(double(_nav_gps.ne.x), double(_nav_gps.ne.y),
+                                     double(_nav_gps.pos_sigma), 0, &ok);
                 _nav_rejects += ok ? 0 : 1;
             }
-            _nav_vio_reset = _nav_vio.reset_counter;
-            _nav_vio_reset_known = true;
+            nav_part(NAV_POSITION, t0);
+            break;
+        case 1: {
+            _nav_gps.velocity_pending = false;
+            const cw_vec3_t vel = c_vec(_nav_gps.vel);
+            cw_nav_fuse_velocity(&vel, double(_nav_gps.vel_sigma), &ok);
+            _nav_rejects += ok ? 0 : 1;
+            nav_part(NAV_VELOCITY, t0);
+            break;
         }
-        return;
+        case 2: {
+            _nav_mag_us = compass.last_update_usec();
+            const cw_vec3_t mag = c_vec(compass.get_field());
+            cw_nav_fuse_mag(&mag, double(compass.get_declination()), &ok);
+            _nav_rejects += ok ? 0 : 1;
+            nav_part(NAV_MAG, t0);
+            break;
+        }
+        default:
+            _nav_baro_ms = baro.get_last_update();
+            cw_nav_fuse_height(double(baro.get_altitude()), &ok);
+            _nav_rejects += ok ? 0 : 1;
+            nav_part(NAV_HEIGHT, t0);
+            break;
+        }
+        break;
     }
+}
 
+// a new GPS fix: its position and velocity, held until fused
+void AP_Ada::nav_take_gps()
+{
     const AP_GPS &gps = AP::gps();
     const uint32_t fix_ms = gps.last_fix_time_ms();
     Location origin;
@@ -682,12 +738,12 @@ void AP_Ada::nav_fuse()
     float sacc = NAV_GPS_VEL_MIN_MS;
     UNUSED_RESULT(gps.horizontal_accuracy(hacc));
     UNUSED_RESULT(gps.speed_accuracy(sacc));
-    const Vector2f ne = origin.get_distance_NE(gps.location());
-    cw_nav_fuse_position(double(ne.x), double(ne.y), double(MAX(hacc, NAV_GPS_POS_MIN_M)), 0, &ok);
-    _nav_rejects += ok ? 0 : 1;
-    const cw_vec3_t vel = c_vec(gps.velocity());
-    cw_nav_fuse_velocity(&vel, double(MAX(sacc, NAV_GPS_VEL_MIN_MS)), &ok);
-    _nav_rejects += ok ? 0 : 1;
+    _nav_gps.ne = origin.get_distance_NE(gps.location());
+    _nav_gps.pos_sigma = MAX(hacc, NAV_GPS_POS_MIN_M);
+    _nav_gps.vel = gps.velocity();
+    _nav_gps.vel_sigma = MAX(sacc, NAV_GPS_VEL_MIN_MS);
+    _nav_gps.position_pending = true;
+    _nav_gps.velocity_pending = true;
 }
 
 void AP_Ada::nav_log()
@@ -756,10 +812,17 @@ void AP_Ada::nav_log()
                            d_roll, d_pitch, d_yaw, d_vel, d_horiz, d_down);
     }
 
-    if (now_ms - _nav_time_log_ms < 1000) {
-        return;
+    if (now_ms - _nav_time_log_ms >= 1000) {
+        _nav_time_log_ms = now_ms;
+        nav_log_stats();
     }
-    _nav_time_log_ms = now_ms;
+#endif
+}
+
+// ADNT and ADNP for the interval just ended, and a new interval
+void AP_Ada::nav_log_stats()
+{
+#if HAL_LOGGING_ENABLED
     cw_nav_state_t st;
     cw_nav_state(&st);
     const uint32_t *c = st.counters;
@@ -792,8 +855,35 @@ void AP_Ada::nav_log()
                        c[CW_NAV_POSITION_RESETS], _nav_gaps, _nav_rejects,
                        _nav_time.sum_us(), _nav_time.max_us(), _nav_time.overruns(),
                        uint8_t(_nav_time.tripped()));
-    _nav_time.new_interval();
+
+// @LoggerMessage: ADNP
+// @Description: Ada/SPARK navigation filter in shadow: the parts of nav_update in this interval, longest single call and number of calls each
+// @Field: TimeUS: Time since system startup
+// @Field: Pr: longest predict (all its steps)
+// @Field: PrN: predicts
+// @Field: St: most predict steps in one call (an IMU interval over 50 ms is split)
+// @Field: Ps: longest position update
+// @Field: PsN: position updates
+// @Field: Vl: longest velocity update
+// @Field: VlN: velocity updates
+// @Field: Mg: longest magnetometer update (three axes and the declination)
+// @Field: MgN: magnetometer updates
+// @Field: Hg: longest barometer height update
+// @Field: HgN: barometer height updates
+// @Field: Sr: the start (once)
+    const auto &np = _nav_parts;
+    AP::logger().Write("ADNP", "TimeUS,Pr,PrN,St,Ps,PsN,Vl,VlN,Mg,MgN,Hg,HgN,Sr",
+                       "ss--s-s-s-s-s", "FF--F-F-F-F-F", "QIHBIHIHIHIHI",
+                       AP_HAL::micros64(),
+                       np.max_us[NAV_PREDICT], np.n[NAV_PREDICT], np.max_steps,
+                       np.max_us[NAV_POSITION], np.n[NAV_POSITION],
+                       np.max_us[NAV_VELOCITY], np.n[NAV_VELOCITY],
+                       np.max_us[NAV_MAG], np.n[NAV_MAG],
+                       np.max_us[NAV_HEIGHT], np.n[NAV_HEIGHT],
+                       np.max_us[NAV_START]);
 #endif
+    _nav_time.new_interval();
+    _nav_parts = {};
 }
 
 #endif  // AP_ADA_ENABLED

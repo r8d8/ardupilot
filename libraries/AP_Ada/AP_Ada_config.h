@@ -24,6 +24,13 @@
 #define AP_ADA_CRSF_BUDGET_US 100
 #endif
 
+// the CRSF shadow runs in the RC input thread, which higher-priority
+// threads preempt: it is switched off once the 99th percentile of its
+// per-byte times is over budget this many seconds in a row
+#ifndef AP_ADA_CRSF_TRIP_INTERVALS
+#define AP_ADA_CRSF_TRIP_INTERVALS 3
+#endif
+
 // the navigation filter: one predict (21-state covariance) and the
 // fusions that have new data, at AP_ADA_NAV_RATE_HZ
 #ifndef AP_ADA_NAV_BUDGET_US
