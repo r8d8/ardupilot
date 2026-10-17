@@ -13,6 +13,10 @@ public:
 
     void update();
 
+    // an EKF height reset: call every loop, in the frame the position
+    // controller takes it (see the .cpp)
+    void check_ekf_reset();
+
     // check if the last healthy range finder reading is too old to be considered valid
     bool data_stale(void);
 

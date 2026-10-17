@@ -53,6 +53,26 @@
  # define RANGEFINDER_PLAUSIBLE_REPORT_MS 10000   // at most one GCS warning this often
 #endif
 
+// An EKF height reset (inside a core or a lane switch) moves the origin
+// frame, not the surface: shift the gate's reference with it. EKF3 hands
+// the reset's height change only to the callers in the frame it is first
+// asked for (getLastPosDownReset); later callers get the new time with a
+// change of 0. The position controller asks every loop, so this must too
+// (Copter: update_rangefinder_terrain_offset, a fast task); from the 20 Hz
+// rangefinder update it saw the change only by chance (SITL, a 70 m
+// barometer step: the gate kept expecting 160 m at 23 m true height).
+void AP_SurfaceDistance::check_ekf_reset()
+{
+    float reset_d_m;
+    const uint32_t reset_ms = AP::ahrs().getLastPosDownReset(reset_d_m);
+    if (reset_ms != last_pos_reset_ms) {
+        if (plausible_terrain_valid) {
+            plausible_terrain_u_m -= reset_d_m;
+        }
+        last_pos_reset_ms = reset_ms;
+    }
+}
+
 void AP_SurfaceDistance::update()
 {
     WITH_SEMAPHORE(sem);
@@ -102,16 +122,6 @@ void AP_SurfaceDistance::update()
     float pos_d_m;
     if (AP::ahrs().get_relative_position_D_origin_float(pos_d_m)) {
         ref_pos_u_m = -pos_d_m;
-    }
-
-    // an EKF height reset moves the origin frame, not the surface
-    float reset_d_m;
-    const uint32_t reset_ms = AP::ahrs().getLastPosDownReset(reset_d_m);
-    if (reset_ms != last_pos_reset_ms) {
-        if (plausible_terrain_valid) {
-            plausible_terrain_u_m -= reset_d_m;
-        }
-        last_pos_reset_ms = reset_ms;
     }
 
     // plausibility gate, downward rangefinders only (see top of file)

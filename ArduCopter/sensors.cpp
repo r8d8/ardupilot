@@ -53,6 +53,9 @@ bool Copter::rangefinder_up_ok() const
 // terrain offset is the terrain's height above the EKF origin
 void Copter::update_rangefinder_terrain_offset()
 {
+    // every loop, in the same frame as the position controller
+    rangefinder_state.check_ekf_reset();
+
     float terrain_u_m = rangefinder_state.ref_pos_u_m - rangefinder_state.alt_glitch_protected_m;
     rangefinder_state.terrain_u_m += (terrain_u_m - rangefinder_state.terrain_u_m) * (copter.G_Dt / MAX(copter.g2.surftrak_tc, copter.G_Dt));
 
