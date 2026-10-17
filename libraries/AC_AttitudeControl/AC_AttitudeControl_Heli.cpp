@@ -315,6 +315,13 @@ AC_AttitudeControl_Heli::AC_AttitudeControl_Heli(AP_AHRS_View &ahrs, AP_MotorsHe
     _flags_heli.leaky_i = true;
     _flags_heli.flybar_passthrough = false;
     _flags_heli.tail_passthrough = false;
+
+#if AP_ADA_ENABLED
+    // the Ada/SPARK rate controllers in shadow (AP_Ada, ADAR)
+    _pid_rate_roll.set_ada_shadow(0);
+    _pid_rate_pitch.set_ada_shadow(1);
+    _pid_rate_yaw.set_ada_shadow(2);
+#endif
 #if AP_FILTER_ENABLED
     set_notch_sample_rate(AP::scheduler().get_loop_rate_hz());
 #endif

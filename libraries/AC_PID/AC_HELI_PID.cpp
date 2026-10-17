@@ -3,6 +3,9 @@
 
 #include <AP_Math/AP_Math.h>
 #include "AC_HELI_PID.h"
+#if AP_ADA_ENABLED
+#include <AP_Ada/AP_Ada.h>
+#endif
 
 const AP_Param::GroupInfo AC_HELI_PID::var_info[] = {
     // @Param: P
@@ -112,6 +115,9 @@ AC_HELI_PID::AC_HELI_PID(const AC_PID::Defaults &defaults,  float initial_ilmi) 
     AP_Param::setup_object_defaults(this, var_info);
 
     _last_requested_rate = 0;
+#if AP_ADA_ENABLED
+    _ada_leak_min = &_leak_min;
+#endif
 }
 
 // This is an integrator which tends to decay to zero naturally
@@ -119,6 +125,13 @@ AC_HELI_PID::AC_HELI_PID(const AC_PID::Defaults &defaults,  float initial_ilmi) 
 
 void AC_HELI_PID::update_leaky_i(float leak_rate)
 {
+#if AP_ADA_ENABLED
+    if (_ada_axis >= 0) {
+        if (AP_Ada *ada = AP_Ada::get_singleton()) {
+            ada->rate_leak(uint8_t(_ada_axis), leak_rate);
+        }
+    }
+#endif
     if (!is_zero(_ki)){
 
         // integrator does not leak down below Leak Min

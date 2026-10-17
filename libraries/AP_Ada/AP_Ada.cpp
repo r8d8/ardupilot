@@ -138,6 +138,32 @@ void AP_Ada::update()
                        _swash.max_cyclic, _swash_time.sum_us(), _swash_time.max_us(),
                        _swash_time.percentile_us(99), _swash_time.overruns(),
                        uint8_t(_swash_time.tripped()));
+
+// @LoggerMessage: ADAR
+// @Description: Ada/SPARK heli rate controllers in shadow, compared with AC_PID / AC_HELI_PID update by update
+// @Field: TimeUS: Time since system startup
+// @Field: N: updates compared in this interval (all three axes)
+// @Field: Rej: inputs the Ada controllers refused
+// @Field: Uns: updates not compared: SMAX or a notch filter set
+// @Field: Set: updates not compared while the Ada controller settles after being brought back in step
+// @Field: Mis: updates whose P + D + I or feed-forward differs by more than 1e-4
+// @Field: ER: largest roll P + D + I difference in this interval
+// @Field: EP: largest pitch P + D + I difference in this interval
+// @Field: EY: largest yaw P + D + I difference in this interval
+// @Field: EF: largest feed-forward difference in this interval
+// @Field: TT: time spent in the Ada controllers in this interval
+// @Field: TMx: longest single update in this interval
+// @Field: TP: 99th percentile of the update times in this interval
+// @Field: Ovr: updates over the time budget (AP_ADA_RATE_BUDGET_US) in this interval
+// @Field: Off: 1 once the rate shadow is switched off after AP_ADA_TRIP_OVERRUNS overruns since boot
+    AP::logger().Write("ADAR", "TimeUS,N,Rej,Uns,Set,Mis,ER,EP,EY,EF,TT,TMx,TP,Ovr,Off",
+                       "s---------sss--", "F---------FFF--", "QIIIIIffffIIIIB",
+                       AP_HAL::micros64(), _rate_stats.checks, _rate_stats.rejects,
+                       _rate_stats.unsupported, _rate_stats.settling, _rate_stats.mismatch,
+                       _rate_stats.max_err[0], _rate_stats.max_err[1], _rate_stats.max_err[2],
+                       _rate_stats.max_ff_err, _rate_time.sum_us(), _rate_time.max_us(),
+                       _rate_time.percentile_us(99), _rate_time.overruns(),
+                       uint8_t(_rate_time.tripped()));
 #endif
 
     crsf_report();
@@ -149,6 +175,8 @@ void AP_Ada::update()
     _swash = {};
     _ubx_time.new_interval();
     _swash_time.new_interval();
+    _rate_stats = {};
+    _rate_time.new_interval();
 }
 
 // the CRSF snapshot from the RC input thread: log it if new, send what it
@@ -484,6 +512,149 @@ void AP_Ada::crsf_check(uint8_t type, uint8_t length, const uint16_t *channels,
         _crsf_pub.mismatch = what;
         _crsf_pub.mismatch_type = type;
         _crsf_mismatch_seen = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// rate controller shadow: the heli roll, pitch and yaw rate PIDs (AC_PID with
+// AC_HELI_PID) mirrored, state change for state change, by CW_PID
+
+// the outputs are of order 1; AC_PID computes in float, as CW_PID does,
+// but the compilers may fuse multiply-adds differently
+static const float RATE_TOLERANCE = 1.0e-4f;
+// calls not compared after the Ada controller was brought back in step,
+// while its filters settle (2 s at 400 Hz)
+static const uint16_t RATE_SETTLE_CALLS = 800;
+
+// bring the Ada controller back in step: its filters restart from the next
+// input and its integrator is ArduPilot's; compared again once settled
+void AP_Ada::rate_resync(uint8_t axis, float integrator)
+{
+    bool ok = false;
+    cw_rate_reset_filter(axis);
+    cw_rate_set_integrator(axis, integrator, &ok);
+    _rate[axis].in_sync = ok;
+    _rate[axis].settle = RATE_SETTLE_CALLS;
+}
+
+void AP_Ada::rate_check(uint8_t axis, const cw_rate_config_t &config, bool supported,
+                        float target, float measurement, float dt, bool limit,
+                        float pd_scale, float i_scale, float output, float ff,
+                        float integrator)
+{
+    if (!_healthy || axis >= RATE_AXES || _rate_time.tripped()) {
+        return;
+    }
+    RateAxis &r = _rate[axis];
+    if (!supported) {
+        // no Ada counterpart for SMAX or a notch: out of step until it goes
+        _rate_stats.unsupported++;
+        r.in_sync = false;
+        return;
+    }
+    if (!r.configured || memcmp(&config, &r.config, sizeof(config)) != 0) {
+        bool ok = false;
+        cw_rate_configure(axis, &config, &ok);
+        r.configured = ok;
+        r.config = config;
+        if (!ok) {
+            _rate_stats.rejects++;
+            r.in_sync = false;
+            return;
+        }
+    }
+    if (!r.in_sync) {
+        // ArduPilot has just updated: start the Ada controller from its
+        // integrator, its filters from the next call
+        rate_resync(axis, integrator);
+        return;
+    }
+
+    // timed: what the shadow adds to every rate controller update
+    const uint32_t t0 = AP_HAL::micros();
+    float ada_out = 0;
+    float ada_ff = 0;
+    bool ok = false;
+    cw_rate_update(axis, target, measurement, dt, limit ? 1 : 0, pd_scale, i_scale,
+                   &ada_out, &ada_ff, &ok);
+    timed(_rate_time, "rate", AP_HAL::micros() - t0);
+    if (!ok) {
+        _rate_stats.rejects++;
+        r.in_sync = false;
+        return;
+    }
+    if (r.settle > 0) {
+        r.settle--;
+        _rate_stats.settling++;
+        return;
+    }
+    _rate_stats.checks++;
+    const float err = fabsf(ada_out - output);
+    const float ff_err = fabsf(ada_ff - ff);
+    _rate_stats.max_err[axis] = MAX(_rate_stats.max_err[axis], err);
+    _rate_stats.max_ff_err = MAX(_rate_stats.max_ff_err, ff_err);
+    if (err <= RATE_TOLERANCE && ff_err <= RATE_TOLERANCE) {
+        return;
+    }
+    _rate_stats.mismatch++;
+    if (!_rate_mismatch_reported) {
+        static const char *names[RATE_AXES] { "roll", "pitch", "yaw" };
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: rate %s differs: %.5f vs %.5f (ff %.5f vs %.5f)",
+                      names[axis], double(ada_out), double(output), double(ada_ff), double(ff));
+        _rate_mismatch_reported = true;
+    }
+}
+
+void AP_Ada::rate_leak(uint8_t axis, float rate)
+{
+    if (!_healthy || axis >= RATE_AXES || _rate_time.tripped() || !_rate[axis].in_sync) {
+        return;
+    }
+    bool ok = false;
+    cw_rate_leak(axis, rate, &ok);
+    if (!ok) {
+        _rate_stats.rejects++;
+        _rate[axis].in_sync = false;
+    }
+}
+
+void AP_Ada::rate_reset_i(uint8_t axis)
+{
+    if (_healthy && axis < RATE_AXES && !_rate_time.tripped()) {
+        cw_rate_reset_i(axis);
+    }
+}
+
+void AP_Ada::rate_set_integrator(uint8_t axis, float integrator)
+{
+    if (!_healthy || axis >= RATE_AXES || _rate_time.tripped()) {
+        return;
+    }
+    bool ok = false;
+    cw_rate_set_integrator(axis, integrator, &ok);
+    if (!ok) {
+        _rate_stats.rejects++;
+        _rate[axis].in_sync = false;
+    }
+}
+
+void AP_Ada::rate_relax_integrator(uint8_t axis, float integrator, float dt, float tc)
+{
+    if (!_healthy || axis >= RATE_AXES || _rate_time.tripped()) {
+        return;
+    }
+    bool ok = false;
+    cw_rate_relax_integrator(axis, integrator, dt, tc, &ok);
+    if (!ok) {
+        _rate_stats.rejects++;
+        _rate[axis].in_sync = false;
+    }
+}
+
+void AP_Ada::rate_reset_filter(uint8_t axis)
+{
+    if (_healthy && axis < RATE_AXES && !_rate_time.tripped()) {
+        cw_rate_reset_filter(axis);
     }
 }
 

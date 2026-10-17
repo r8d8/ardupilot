@@ -3,6 +3,9 @@
 
 #include <AP_Math/AP_Math.h>
 #include "AC_PID.h"
+#if AP_ADA_ENABLED
+#include <AP_Ada/AP_Ada.h>
+#endif
 
 #define AC_PID_DEFAULT_NOTCH_ATTENUATION 40
 
@@ -199,6 +202,9 @@ float AC_PID::update_all(float target, float measurement, float dt, bool limit, 
     if (!isfinite(target) || !isfinite(measurement)) {
         return 0.0f;
     }
+#if AP_ADA_ENABLED
+    const float target_in = target;
+#endif
 
     // Flag used for logging to indicate a filter reset occurred
     _pid_info.reset = _flags._reset_filter;
@@ -307,6 +313,11 @@ float AC_PID::update_all(float target, float measurement, float dt, bool limit, 
     _pid_info.FF = _target * _kff;
     _pid_info.DFF = _target_derivative * _kdff;
 
+#if AP_ADA_ENABLED
+    if (_ada_axis >= 0) {
+        ada_check(target_in, measurement, dt, limit, pd_scale, i_scale, P_out + D_out + I_out);
+    }
+#endif
     return P_out + D_out + I_out;
 }
 
@@ -385,6 +396,13 @@ void AC_PID::reset_I()
 {
     _flags._I_set = true;
     _integrator = 0.0;
+#if AP_ADA_ENABLED
+    if (_ada_axis >= 0) {
+        if (AP_Ada *ada = AP_Ada::get_singleton()) {
+            ada->rate_reset_i(uint8_t(_ada_axis));
+        }
+    }
+#endif
 }
 
 // Loads controller configuration from EEPROM, including gains and filter frequencies. (not used)
@@ -434,6 +452,13 @@ void AC_PID::set_integrator(float integrator)
 {
     _flags._I_set = true;
     _integrator = constrain_float(integrator, -_kimax, _kimax);
+#if AP_ADA_ENABLED
+    if (_ada_axis >= 0) {
+        if (AP_Ada *ada = AP_Ada::get_singleton()) {
+            ada->rate_set_integrator(uint8_t(_ada_axis), integrator);
+        }
+    }
+#endif
 }
 
 // Gradually adjust the integrator toward a desired value using a time constant.
@@ -444,5 +469,45 @@ void AC_PID::relax_integrator(float integrator, float dt, float time_constant)
     if (is_positive(dt)) {
         _flags._I_set = true;
         _integrator = _integrator + (integrator - _integrator) * (dt / (dt + time_constant));
+#if AP_ADA_ENABLED
+        if (_ada_axis >= 0) {
+            if (AP_Ada *ada = AP_Ada::get_singleton()) {
+                ada->rate_relax_integrator(uint8_t(_ada_axis), integrator, dt, time_constant);
+            }
+        }
+#endif
     }
 }
+
+#if AP_ADA_ENABLED
+void AC_PID::ada_reset_filter()
+{
+    if (_ada_axis >= 0) {
+        if (AP_Ada *ada = AP_Ada::get_singleton()) {
+            ada->rate_reset_filter(uint8_t(_ada_axis));
+        }
+    }
+}
+
+// the same call on the Ada rate controller of this axis, compared; the
+// slew limiter (SMAX) and notch filters have no Ada counterpart
+void AC_PID::ada_check(float target, float measurement, float dt, bool limit,
+                       float pd_scale, float i_scale, float output)
+{
+    AP_Ada *ada = AP_Ada::get_singleton();
+    if (ada == nullptr) {
+        return;
+    }
+    const cw_rate_config_t config {
+        _kp, _ki, _kd, _kff, _kdff, _kimax, _kpdmax,
+        _ada_leak_min != nullptr ? _ada_leak_min->get() : 0.0f,
+        _filt_T_hz, _filt_E_hz, _filt_D_hz
+    };
+    bool supported = !is_positive(_slew_rate_max);
+#if AP_FILTER_ENABLED
+    supported = supported && _notch_T_filter == 0 && _notch_E_filter == 0;
+#endif
+    ada->rate_check(uint8_t(_ada_axis), config, supported, target, measurement, dt,
+                    limit, pd_scale, i_scale, output, get_ff(), _integrator);
+}
+#endif

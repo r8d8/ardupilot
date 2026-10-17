@@ -10,6 +10,7 @@
 #include <Filter/SlewLimiter.h>
 #include <Filter/NotchFilter.h>
 #include <Filter/AP_Filter.h>
+#include <AP_Ada/AP_Ada_config.h>
 
 #define AC_PID_TFILT_HZ_DEFAULT  0.0f   // default input filter frequency
 #define AC_PID_EFILT_HZ_DEFAULT  0.0f   // default input filter frequency
@@ -84,7 +85,14 @@ public:
     // Flags the input filter for reset. The next call to `update_all()` will reinitialize the filter using the next input.
     void reset_filter() {
         _flags._reset_filter = true;
+        ada_reset_filter();
     }
+
+#if AP_ADA_ENABLED
+    // the Ada/SPARK rate controller in shadow (AP_Ada) mirrors this PID's
+    // every state change: axis 0 roll, 1 pitch, 2 yaw
+    void set_ada_shadow(uint8_t axis) { _ada_axis = int8_t(axis); }
+#endif
 
     // Loads controller configuration from EEPROM, including gains and filter frequencies. (not used)
     void load_gains();
@@ -160,6 +168,18 @@ protected:
     // Updates the integrator based on current error and dt.
     // If `limit` is true, the integrator is only allowed to shrink to avoid wind-up.
     void update_i(float dt, bool limit, float i_scale = 1.0f);
+
+#if AP_ADA_ENABLED
+    // the Ada/SPARK shadow (set_ada_shadow): its axis, -1 for none, and the
+    // heli leak minimum (AC_HELI_PID's ILMI) when there is one
+    int8_t _ada_axis = -1;
+    const AP_Float *_ada_leak_min = nullptr;
+    void ada_reset_filter();
+    void ada_check(float target, float measurement, float dt, bool limit,
+                   float pd_scale, float i_scale, float output);
+#else
+    void ada_reset_filter() {}
+#endif
 
     // parameters
     AP_Float _kp;

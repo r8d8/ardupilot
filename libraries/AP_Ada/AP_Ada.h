@@ -24,6 +24,8 @@
   - ADAS: the swashplate mixer against AP_MotorsHeli_Swash, servo by servo
   - ADAN, ADNT: the navigation filter (CW_Nav.INS) against the AHRS (EKF3)
   - ADAC: the CRSF parser against AP_RCProtocol_CRSF, frame by frame
+  - ADAR: the heli rate controllers against AC_PID / AC_HELI_PID, call by
+    call
   The UBX, swashplate, navigation and CRSF calls are timed
   (AP_Ada_CallTimer); a
   shadow whose calls overrun their budget too often is switched off (HZ-19,
@@ -74,6 +76,19 @@ public:
     void crsf_feed(uint8_t byte, uint32_t now_us);
     void crsf_check(uint8_t type, uint8_t length, const uint16_t *channels,
                     int16_t link_quality);
+
+    // rate controller shadow, called by the AC_PIDs set_ada_shadow marks
+    // (the heli roll, pitch and yaw rate PIDs): every update with its
+    // inputs, configuration and results, and every other state change
+    void rate_check(uint8_t axis, const cw_rate_config_t &config, bool supported,
+                    float target, float measurement, float dt, bool limit,
+                    float pd_scale, float i_scale, float output, float ff,
+                    float integrator);
+    void rate_leak(uint8_t axis, float rate);
+    void rate_reset_i(uint8_t axis);
+    void rate_set_integrator(uint8_t axis, float integrator);
+    void rate_relax_integrator(uint8_t axis, float integrator, float dt, float tc);
+    void rate_reset_filter(uint8_t axis);
 
     // called by AP_VisualOdom_MAV with every pose, rotated and corrected
     // as the EKF gets it; consumed: the EKF was given it (quality)
@@ -153,6 +168,28 @@ private:
 
     void crsf_publish();
     void crsf_report();
+
+    // rate controller shadow, per axis
+    static const uint8_t RATE_AXES = 3;
+    struct RateAxis {
+        cw_rate_config_t config;   // last sent to the Ada controller
+        bool configured;
+        bool in_sync;              // false after a refused or unsupported call
+        uint16_t settle;           // calls not compared after a resync
+    } _rate[RATE_AXES];
+    // since the last ADAR log message
+    struct {
+        uint32_t checks;           // updates compared
+        uint32_t rejects;          // inputs the Ada controllers refused
+        uint32_t unsupported;      // updates not compared: SMAX or a notch set
+        uint32_t settling;         // updates not compared after a resync
+        uint32_t mismatch;         // outputs differing beyond the tolerance
+        float max_err[RATE_AXES];  // largest P + D + I difference per axis
+        float max_ff_err;          // largest feed-forward difference
+    } _rate_stats;
+    bool _rate_mismatch_reported;
+    AP_Ada_CallTimer _rate_time{AP_ADA_RATE_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
+    void rate_resync(uint8_t axis, float integrator);
 
     // navigation shadow
     struct {

@@ -31,6 +31,11 @@
 #define AP_ADA_CRSF_TRIP_INTERVALS 3
 #endif
 
+// one rate controller update (a PID step)
+#ifndef AP_ADA_RATE_BUDGET_US
+#define AP_ADA_RATE_BUDGET_US 50
+#endif
+
 // the navigation filter: one predict (21-state covariance) and the
 // fusions that have new data, at AP_ADA_NAV_RATE_HZ
 #ifndef AP_ADA_NAV_BUDGET_US
