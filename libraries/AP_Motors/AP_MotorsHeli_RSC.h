@@ -82,6 +82,10 @@ public:
     // true if we are considered to be autorotating or bailing out of an autorotation
     bool        in_autorotation(void) const;
 
+    // measured rotor speed (RPM sensor 1, as the governor) in percent of
+    // H_RSC_GOV_RPM; false without RPM data or GOV_RPM
+    bool        get_rotor_speed_pct(float &pct) const;
+
     // true if we are using a manual collective flight mode
     void        set_using_manual_collective_mode(bool using_manual_collective_mode) { _using_manual_collective_mode = using_manual_collective_mode; }
 

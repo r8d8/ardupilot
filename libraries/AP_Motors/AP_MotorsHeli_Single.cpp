@@ -18,6 +18,7 @@
 #include <SRV_Channel/SRV_Channel.h>
 #include "AP_MotorsHeli_Single.h"
 #include <GCS_MAVLink/GCS.h>
+#include <AP_Logger/AP_Logger.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -185,6 +186,32 @@ const AP_Param::GroupInfo AP_MotorsHeli_Single::var_info[] = {
     // @Range: -1 1
     // @User: Standard
     AP_GROUPINFO("YAW_TRIM", 23,  AP_MotorsHeli_Single, _yaw_trim, 0.0f),
+
+    // @Param: OSPD_PCT
+    // @DisplayName: Rotor overspeed limiter, threshold
+    // @Description: In powered flight (motor interlock on, not in autorotation, not landed), a rotor speed from RPM sensor 1 above this percentage of H_RSC_GOV_RPM engages a collective floor: H_OSPD_GAIN of collective per percent above H_OSPD_REL_PCT. It overrides the altitude and position controllers' collective, accepting a slower descent or a climb, until the rotor speed is below H_OSPD_REL_PCT again. Rising air through the rotor in a descent can otherwise overspeed it with the collective at its minimum, as the governor can only close the throttle. Set it above the governor's band. 0 disables. A script can set it to 0 for phases that fly the collective themselves.
+    // @Units: %
+    // @Range: 0 150
+    // @Increment: 0.5
+    // @User: Advanced
+    AP_GROUPINFO("OSPD_PCT", 24, AP_MotorsHeli_Single, _ospd_pct, 0.0f),
+
+    // @Param: OSPD_REL_PCT
+    // @DisplayName: Rotor overspeed limiter, release
+    // @Description: The rotor overspeed limiter releases below this percentage of H_RSC_GOV_RPM, and its collective floor counts from it. At most H_OSPD_PCT.
+    // @Units: %
+    // @Range: 90 150
+    // @Increment: 0.5
+    // @User: Advanced
+    AP_GROUPINFO("OSPD_REL_PCT", 25, AP_MotorsHeli_Single, _ospd_release_pct, 102.0f),
+
+    // @Param: OSPD_GAIN
+    // @DisplayName: Rotor overspeed limiter, gain
+    // @Description: Collective (0 to 1, H_COL_MIN to H_COL_MAX) the rotor overspeed limiter's floor rises per percent of rotor speed above H_OSPD_REL_PCT.
+    // @Range: 0.005 0.2
+    // @Increment: 0.005
+    // @User: Advanced
+    AP_GROUPINFO("OSPD_GAIN", 26, AP_MotorsHeli_Single, _ospd_gain, 0.03f),
 
     AP_GROUPEND
 };
@@ -391,6 +418,17 @@ void AP_MotorsHeli_Single::move_actuators(float roll_out, float pitch_out, float
         collective_out = _collective_land_min_pct;
         limit.throttle_lower = true;
     }
+
+    // rotor overspeed limiter: a collective floor in powered flight while
+    // the rotor runs fast; limit.throttle_lower holds the altitude
+    // controller's integrator while it acts
+    const float coll_before_ospd = collective_out;
+    const float ospd_floor = overspeed_collective_floor();
+    if (collective_out < ospd_floor) {
+        collective_out = ospd_floor;
+        limit.throttle_lower = true;
+    }
+    overspeed_log(coll_before_ospd, collective_out);
 
     // updates below land min collective flag
     _heliflags.below_land_min_coll = !is_positive(collective_out - _collective_land_min_pct);
@@ -684,3 +722,59 @@ void AP_MotorsHeli_Single::Log_Write(void)
     _tail_rotor.write_log();
 }
 #endif
+
+// the rotor overspeed limiter's collective floor (0..1), 0 when it does not
+// act: off (H_OSPD_PCT 0), not in powered flight, or no rotor speed
+float AP_MotorsHeli_Single::overspeed_collective_floor()
+{
+    float pct;
+    const bool powered = armed() && get_interlock() && !_main_rotor.in_autorotation() &&
+                         !_heliflags.land_complete;
+    if (!is_positive(_ospd_pct.get()) || !powered || !_main_rotor.get_rotor_speed_pct(pct)) {
+        _ospd_engaged = false;
+        _ospd_floor = 0;
+        return 0;
+    }
+    _ospd_rotor_pct = pct;
+    const float release = MIN(_ospd_release_pct.get(), _ospd_pct.get());
+    if (!_ospd_engaged && pct > _ospd_pct) {
+        _ospd_engaged = true;
+        const uint32_t now_ms = AP_HAL::millis();
+        if (now_ms - _ospd_report_ms > 5000) {
+            _ospd_report_ms = now_ms;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rotor overspeed %.0f%%: collective floor", double(pct));
+        }
+    } else if (_ospd_engaged && pct < release) {
+        _ospd_engaged = false;
+    }
+    _ospd_floor = _ospd_engaged ? constrain_float(_ospd_gain * (pct - release), 0.0f, 1.0f) : 0.0f;
+    return _ospd_floor;
+}
+
+// HOSP at 10 Hz while the limiter is engaged, and once when it releases
+void AP_MotorsHeli_Single::overspeed_log(float coll_in, float coll_out)
+{
+#if HAL_LOGGING_ENABLED
+    const uint32_t now_ms = AP_HAL::millis();
+    if (!_ospd_engaged && !_ospd_was_engaged) {
+        return;
+    }
+    if (_ospd_engaged && _ospd_was_engaged && now_ms - _ospd_log_ms < 100) {
+        return;
+    }
+    _ospd_was_engaged = _ospd_engaged;
+    _ospd_log_ms = now_ms;
+// @LoggerMessage: HOSP
+// @Description: Helicopter rotor overspeed limiter (fork, Clearwater): while engaged, 10 Hz
+// @Field: TimeUS: Time since system startup
+// @Field: RPct: rotor speed, percent of H_RSC_GOV_RPM
+// @Field: Floor: collective floor (0..1)
+// @Field: CIn: collective asked for by the attitude/position controllers (0..1)
+// @Field: COut: collective out (0..1)
+// @Field: Eng: 1 while engaged
+    AP::logger().Write("HOSP", "TimeUS,RPct,Floor,CIn,COut,Eng", "s%----", "F00000", "QffffB",
+                       AP_HAL::micros64(), _ospd_rotor_pct, _ospd_floor, coll_in, coll_out,
+                       uint8_t(_ospd_engaged));
+#endif
+}
+

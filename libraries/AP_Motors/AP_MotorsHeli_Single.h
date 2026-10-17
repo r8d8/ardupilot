@@ -148,5 +148,19 @@ protected:
     AP_Float        _collective_yaw_scale;      // Feed-forward compensation to automatically add rudder input when collective pitch is increased. Can be positive or negative depending on mechanics.
     AP_Float        _yaw_trim;                  // Fixed offset applied to yaw output to reduce yaw I.
 
+    // rotor overspeed limiter (fork, Clearwater): a collective floor in
+    // powered flight while the measured rotor speed is high
+    AP_Float        _ospd_pct;                  // engage above this % of H_RSC_GOV_RPM, 0: off
+    AP_Float        _ospd_release_pct;          // release below this %; the floor counts from it
+    AP_Float        _ospd_gain;                 // collective (0..1) per % above the release
+    bool            _ospd_engaged;
+    bool            _ospd_was_engaged;          // at the last HOSP record
+    float           _ospd_floor;                // the floor now, 0..1
+    float           _ospd_rotor_pct;            // the rotor speed it used
+    uint32_t        _ospd_log_ms;
+    uint32_t        _ospd_report_ms;
+    float overspeed_collective_floor();
+    void overspeed_log(float coll_in, float coll_out);
+
     bool            _acro_tail = false;
 };

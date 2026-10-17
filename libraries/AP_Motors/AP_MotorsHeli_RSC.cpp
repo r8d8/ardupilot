@@ -258,6 +258,15 @@ void AP_MotorsHeli_RSC::set_throttle_curve()
     splinterp5(thrcrv,_thrcrv_poly);
 }
 
+bool AP_MotorsHeli_RSC::get_rotor_speed_pct(float &pct) const
+{
+    if (_rotor_rpm < 0 || _governor_rpm <= 0) {
+        return false;
+    }
+    pct = 100.0f * _rotor_rpm / float(_governor_rpm.get());
+    return true;
+}
+
 // output - update value to send to ESC/Servo
 void AP_MotorsHeli_RSC::output(RotorControlState state)
 {
