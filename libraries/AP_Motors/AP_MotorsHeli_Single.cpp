@@ -207,11 +207,11 @@ const AP_Param::GroupInfo AP_MotorsHeli_Single::var_info[] = {
 
     // @Param: OSPD_GAIN
     // @DisplayName: Rotor overspeed limiter, gain
-    // @Description: Collective (0 to 1, H_COL_MIN to H_COL_MAX) the rotor overspeed limiter's floor rises per percent of rotor speed above H_OSPD_REL_PCT.
-    // @Range: 0.005 0.2
+    // @Description: Collective (0 to 1, H_COL_MIN to H_COL_MAX) the rotor overspeed limiter's floor rises per percent of rotor speed above H_OSPD_REL_PCT. In simulation's stage 1.1 descent at 10 m/s with 15 m/s forward (2000 m, calm air), 0.03 let the rotor reach 114 %, 0.10 held it to 107 % at 7.5 m/s instead of 7.9 m/s down.
+    // @Range: 0.005 0.3
     // @Increment: 0.005
     // @User: Advanced
-    AP_GROUPINFO("OSPD_GAIN", 26, AP_MotorsHeli_Single, _ospd_gain, 0.03f),
+    AP_GROUPINFO("OSPD_GAIN", 26, AP_MotorsHeli_Single, _ospd_gain, 0.10f),
 
     AP_GROUPEND
 };
