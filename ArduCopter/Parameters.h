@@ -561,6 +561,9 @@ public:
     AP_Float    pilot_speed_dn_ms;      // maximum vertical descending velocity the pilot may request
     AP_Float    pilot_takeoff_alt_m;    // altitude vehicle will takeoff to after pilot triggers takeoff with throttle stick
 
+    // fork (Clearwater): the horizontal speed limit of GUIDED velocity targets, m/s, 0: off
+    AP_Float    guided_speed_max_ms;
+
 #if TOY_MODE_ENABLED
     ToyMode toy_mode;
 #endif

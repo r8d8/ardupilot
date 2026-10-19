@@ -168,6 +168,7 @@ protected:
     AP_Float        _uspd_release_pct;          // release above this %; the ceiling counts from it
     AP_Float        _uspd_gain;                 // collective (0..1) per % below the release
     bool            _uspd_engaged;
+    bool            _uspd_at_speed;             // the rotor once at the release since the run-up
     bool            _uspd_was_active;           // at the last HUSP record
     float           _uspd_ceiling = 1.0f;       // the ceiling now, 0..1
     float           _uspd_reference;            // the collective asked for when it engaged

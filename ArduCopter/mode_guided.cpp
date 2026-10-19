@@ -596,7 +596,7 @@ void ModeGuided::set_vel_accel_NED_m(const Vector3f& vel_ned_ms, const Vector3f&
     // set velocity and acceleration targets and zero position
     guided_pos_target_ned_m.zero();
     guided_is_terrain_alt = false;
-    guided_vel_target_ned_ms = vel_ned_ms;
+    guided_vel_target_ned_ms = speed_capped_NED_ms(vel_ned_ms);
     guided_accel_target_ned_mss = accel_ned_mss;
     update_time_ms = millis();
 
@@ -638,7 +638,7 @@ bool ModeGuided::set_pos_vel_accel_NED_m(const Vector3p& pos_ned_m, const Vector
     update_time_ms = millis();
     guided_pos_target_ned_m = pos_ned_m;
     guided_is_terrain_alt = false;
-    guided_vel_target_ned_ms = vel_ned_ms;
+    guided_vel_target_ned_ms = speed_capped_NED_ms(vel_ned_ms);
     guided_accel_target_ned_mss = accel_ned_mss;
 
 #if HAL_LOGGING_ENABLED
@@ -646,6 +646,18 @@ bool ModeGuided::set_pos_vel_accel_NED_m(const Vector3p& pos_ned_m, const Vector
     copter.Log_Write_Guided_Position_Target(guided_mode, guided_pos_target_ned_m, guided_is_terrain_alt, guided_vel_target_ned_ms, guided_accel_target_ned_mss);
 #endif
     return true;
+}
+
+// fork (Clearwater, HZ-38): GUID_SPD_MAX clamps the horizontal speed of a
+// velocity target, keeping its direction; the vertical part is left as is
+Vector3f ModeGuided::speed_capped_NED_ms(const Vector3f& vel_ned_ms) const
+{
+    Vector3f vel = vel_ned_ms;
+    const float max_ms = copter.g2.guided_speed_max_ms.get();
+    if (is_positive(max_ms)) {
+        vel.xy().limit_length(max_ms);
+    }
+    return vel;
 }
 
 // returns true if GUIDED_OPTIONS param suggests SET_ATTITUDE_TARGET's "thrust" field should be interpreted as thrust instead of climb rate

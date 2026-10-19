@@ -1141,6 +1141,10 @@ public:
     bool stabilizing_vel_NE() const;
     bool use_wpnav_for_position_control() const;
 
+    // fork (Clearwater): vel_ned_ms with its horizontal speed clamped to
+    // GUID_SPD_MAX (when set)
+    Vector3f speed_capped_NED_ms(const Vector3f& vel_ned_ms) const;
+
     void limit_clear();
     void limit_init_time_and_pos();
     void limit_set(uint32_t timeout_ms, float alt_min_m, float alt_max_m, float horiz_max_m);

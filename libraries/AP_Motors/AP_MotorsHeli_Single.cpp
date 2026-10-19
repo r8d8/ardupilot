@@ -789,9 +789,13 @@ float AP_MotorsHeli_Single::overspeed_collective_floor()
 }
 
 // the rotor underspeed limiter's collective ceiling (0..1), 1 when it does
-// not act: off (H_USPD_PCT 0), not in powered flight, or no rotor speed.
-// Engaged, it counts down from the collective asked for when it engaged;
-// released, it rises back to 1 at USPD_RECOVERY_PER_S.
+// not act: off (H_USPD_PCT 0), not in powered flight, the run-up not
+// complete, the rotor not yet once at H_USPD_REL_PCT since then, or no
+// rotor speed. The idle run-up and the governor's spool to speed are below
+// the threshold on the ground (simulation, 2026-10-19: idle at 89.9 % at
+// 4000 m held the collective at its minimum, and the take-off never
+// started). Engaged, it counts down from the collective asked for when it
+// engaged; released, it rises back to 1 at USPD_RECOVERY_PER_S.
 float AP_MotorsHeli_Single::underspeed_collective_ceiling(float collective_in)
 {
     static const float USPD_RECOVERY_PER_S = 0.5f;
@@ -800,14 +804,22 @@ float AP_MotorsHeli_Single::underspeed_collective_ceiling(float collective_in)
     _uspd_update_us = now_us;
     float pct;
     const bool powered = armed() && get_interlock() && !_main_rotor.in_autorotation() &&
-                         !_heliflags.land_complete;
+                         !_heliflags.land_complete && _heliflags.rotor_runup_complete;
     if (!is_positive(_uspd_pct.get()) || !powered || !_main_rotor.get_rotor_speed_pct(pct)) {
         _uspd_engaged = false;
+        _uspd_at_speed = false;
         _uspd_ceiling = 1.0f;
         return 1.0f;
     }
     _uspd_rotor_pct = pct;
     const float release = MAX(_uspd_release_pct.get(), _uspd_pct.get());
+    if (!_uspd_at_speed) {
+        // armed once the rotor has reached the release since the run-up
+        if (pct < release) {
+            return _uspd_ceiling;
+        }
+        _uspd_at_speed = true;
+    }
     if (!_uspd_engaged && pct < _uspd_pct) {
         _uspd_engaged = true;
         // from the collective asked for now, or a ceiling still coming back

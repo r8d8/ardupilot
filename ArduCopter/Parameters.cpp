@@ -1169,6 +1169,16 @@ const AP_Param::GroupInfo ParametersG2::var_info2[] = {
     // @Increment: 0.1
     AP_GROUPINFO("PILOT_TKO_ALT_M", 20, ParametersG2, pilot_takeoff_alt_m, PILOT_TKO_ALT_M_DEFAULT),
 
+    // fork (Clearwater): a high index, clear of upstream's next ones
+    // @Param: GUID_SPD_MAX
+    // @DisplayName: Guided mode horizontal speed limit
+    // @Description: The horizontal speed of every GUIDED velocity target (velocity, velocity and acceleration, or the velocity of a position and velocity target, from MAVLink or a script) is clamped to this, keeping its direction. Position-only targets fly at WPNAV_SPEED as before. 0 disables.
+    // @Units: m/s
+    // @Range: 0 100
+    // @Increment: 0.5
+    // @User: Advanced
+    AP_GROUPINFO("GUID_SPD_MAX", 50, ParametersG2, guided_speed_max_ms, 0),
+
     // ID 62 is reserved for the AP_SUBGROUPEXTENSION
 
     AP_GROUPEND
