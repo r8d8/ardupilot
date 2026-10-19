@@ -15,6 +15,8 @@
 #include <AP_Math/AP_Math.h>
 #include <GCS_MAVLink/GCS.h>
 
+extern const AP_HAL::HAL& hal;
+
 AP_Ada *AP_Ada::_singleton;
 
 AP_Ada::AP_Ada()
@@ -723,6 +725,9 @@ void AP_Ada::nav_update()
     }
     // timed for the main loop: what the shadow adds at AP_ADA_NAV_RATE_HZ
     const uint32_t t0 = AP_HAL::micros();
+    // disarmed is on the ground, as EKF3 takes it (AP_DAL): the filter
+    // then holds the accelerometer bias of the axes not near vertical
+    cw_nav_set_armed(hal.util->get_soft_armed() ? 1 : 0);
     if (_nav_started) {
         nav_fuse();
     } else {
@@ -1052,6 +1057,37 @@ void AP_Ada::nav_log_stats()
                        np.max_us[NAV_MAG], np.n[NAV_MAG],
                        np.max_us[NAV_HEIGHT], np.n[NAV_HEIGHT],
                        np.max_us[NAV_START]);
+
+    if (st.started) {
+        const AP_AHRS &ahrs = AP::ahrs();
+        // the AHRS keeps EKF3's gyro bias negated, as a drift to add
+        const Vector3f egb = -ahrs.get_gyro_drift();
+        const Vector3f &eab = ahrs.get_accel_bias();
+// @LoggerMessage: ADNB
+// @Description: Ada/SPARK navigation filter in shadow: its IMU bias estimates next to the AHRS's (EKF3)
+// @Field: TimeUS: Time since system startup
+// @Field: GX: Ada gyro bias, body X
+// @Field: GY: Ada gyro bias, body Y
+// @Field: GZ: Ada gyro bias, body Z
+// @Field: AX: Ada accelerometer bias, body X
+// @Field: AY: Ada accelerometer bias, body Y
+// @Field: AZ: Ada accelerometer bias, body Z
+// @Field: EGX: AHRS gyro bias, body X
+// @Field: EGY: AHRS gyro bias, body Y
+// @Field: EGZ: AHRS gyro bias, body Z
+// @Field: EAX: AHRS accelerometer bias, body X
+// @Field: EAY: AHRS accelerometer bias, body Y
+// @Field: EAZ: AHRS accelerometer bias, body Z
+// @Field: Arm: 1 if the filter was told the vehicle is armed
+// @Field: Hld: accelerometer bias axes held on the ground, bit k for body axis k (0 X, 1 Y, 2 Z)
+        AP::logger().Write("ADNB", "TimeUS,GX,GY,GZ,AX,AY,AZ,EGX,EGY,EGZ,EAX,EAY,EAZ,Arm,Hld",
+                           "sEEEoooEEEooo--", "F000000000000--", "QffffffffffffBB",
+                           AP_HAL::micros64(),
+                           float(st.gyro_bias.x), float(st.gyro_bias.y), float(st.gyro_bias.z),
+                           float(st.accel_bias.x), float(st.accel_bias.y), float(st.accel_bias.z),
+                           egb.x, egb.y, egb.z, eab.x, eab.y, eab.z,
+                           st.armed, st.accel_bias_held);
+    }
 #endif
     _nav_time.new_interval();
     _nav_parts = {};
