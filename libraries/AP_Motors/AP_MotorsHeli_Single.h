@@ -162,5 +162,21 @@ protected:
     float overspeed_collective_floor();
     void overspeed_log(float coll_in, float coll_out);
 
+    // rotor underspeed limiter (fork, Clearwater): a collective ceiling in
+    // powered flight while the measured rotor speed droops
+    AP_Float        _uspd_pct;                  // engage below this % of H_RSC_GOV_RPM, 0: off
+    AP_Float        _uspd_release_pct;          // release above this %; the ceiling counts from it
+    AP_Float        _uspd_gain;                 // collective (0..1) per % below the release
+    bool            _uspd_engaged;
+    bool            _uspd_was_active;           // at the last HUSP record
+    float           _uspd_ceiling = 1.0f;       // the ceiling now, 0..1
+    float           _uspd_reference;            // the collective asked for when it engaged
+    float           _uspd_rotor_pct;            // the rotor speed it used
+    uint32_t        _uspd_update_us;
+    uint32_t        _uspd_log_ms;
+    uint32_t        _uspd_report_ms;
+    float underspeed_collective_ceiling(float collective_in);
+    void underspeed_log(float coll_in, float coll_out);
+
     bool            _acro_tail = false;
 };

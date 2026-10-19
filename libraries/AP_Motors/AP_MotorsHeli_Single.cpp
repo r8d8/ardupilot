@@ -213,6 +213,32 @@ const AP_Param::GroupInfo AP_MotorsHeli_Single::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("OSPD_GAIN", 26, AP_MotorsHeli_Single, _ospd_gain, 0.10f),
 
+    // @Param: USPD_PCT
+    // @DisplayName: Rotor underspeed limiter, threshold
+    // @Description: In powered flight (motor interlock on, not in autorotation, not landed), a rotor speed from RPM sensor 1 below this percentage of H_RSC_GOV_RPM engages a collective ceiling: from the collective at that moment, H_USPD_GAIN of collective lower per percent below H_USPD_REL_PCT. More collective than the engine can carry otherwise trades rotor speed away without limit. While the ceiling binds it holds the altitude controller's integrator (throttle_upper) and the horizontal velocity controller's, so the aircraft gives up height or speed rather than rotor speed. It releases above H_USPD_REL_PCT; the ceiling then rises back to full collective at 0.5 per second. Set it below the governor's band. 0 disables.
+    // @Range: 0 100
+    // @Units: %
+    // @Increment: 0.5
+    // @User: Advanced
+    AP_GROUPINFO("USPD_PCT", 27, AP_MotorsHeli_Single, _uspd_pct, 0.0f),
+
+    // @Param: USPD_REL_PCT
+    // @DisplayName: Rotor underspeed limiter, release
+    // @Description: The rotor underspeed limiter releases above this percentage of H_RSC_GOV_RPM, and its ceiling counts from it. At least H_USPD_PCT.
+    // @Range: 0 100
+    // @Units: %
+    // @Increment: 0.5
+    // @User: Advanced
+    AP_GROUPINFO("USPD_REL_PCT", 28, AP_MotorsHeli_Single, _uspd_release_pct, 98.0f),
+
+    // @Param: USPD_GAIN
+    // @DisplayName: Rotor underspeed limiter, gain
+    // @Description: Collective (0 to 1, H_COL_MIN to H_COL_MAX) the rotor underspeed limiter's ceiling comes down per percent of rotor speed below H_USPD_REL_PCT, from the collective when it engaged.
+    // @Range: 0.01 1
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("USPD_GAIN", 29, AP_MotorsHeli_Single, _uspd_gain, 0.05f),
+
     AP_GROUPEND
 };
 
@@ -429,6 +455,17 @@ void AP_MotorsHeli_Single::move_actuators(float roll_out, float pitch_out, float
         limit.throttle_lower = true;
     }
     overspeed_log(coll_before_ospd, collective_out);
+
+    // rotor underspeed limiter: a collective ceiling in powered flight
+    // while the rotor droops; limit.throttle_upper holds the altitude and
+    // horizontal velocity controllers' integrators while it binds
+    const float coll_before_uspd = collective_out;
+    const float uspd_ceiling = underspeed_collective_ceiling(collective_out);
+    if (collective_out > uspd_ceiling) {
+        collective_out = uspd_ceiling;
+        limit.throttle_upper = true;
+    }
+    underspeed_log(coll_before_uspd, collective_out);
 
     // updates below land min collective flag
     _heliflags.below_land_min_coll = !is_positive(collective_out - _collective_land_min_pct);
@@ -749,6 +786,76 @@ float AP_MotorsHeli_Single::overspeed_collective_floor()
     }
     _ospd_floor = _ospd_engaged ? constrain_float(_ospd_gain * (pct - release), 0.0f, 1.0f) : 0.0f;
     return _ospd_floor;
+}
+
+// the rotor underspeed limiter's collective ceiling (0..1), 1 when it does
+// not act: off (H_USPD_PCT 0), not in powered flight, or no rotor speed.
+// Engaged, it counts down from the collective asked for when it engaged;
+// released, it rises back to 1 at USPD_RECOVERY_PER_S.
+float AP_MotorsHeli_Single::underspeed_collective_ceiling(float collective_in)
+{
+    static const float USPD_RECOVERY_PER_S = 0.5f;
+    const uint32_t now_us = AP_HAL::micros();
+    const float dt = constrain_float((now_us - _uspd_update_us) * 1.0e-6f, 0.0f, 0.1f);
+    _uspd_update_us = now_us;
+    float pct;
+    const bool powered = armed() && get_interlock() && !_main_rotor.in_autorotation() &&
+                         !_heliflags.land_complete;
+    if (!is_positive(_uspd_pct.get()) || !powered || !_main_rotor.get_rotor_speed_pct(pct)) {
+        _uspd_engaged = false;
+        _uspd_ceiling = 1.0f;
+        return 1.0f;
+    }
+    _uspd_rotor_pct = pct;
+    const float release = MAX(_uspd_release_pct.get(), _uspd_pct.get());
+    if (!_uspd_engaged && pct < _uspd_pct) {
+        _uspd_engaged = true;
+        // from the collective asked for now, or a ceiling still coming back
+        _uspd_reference = constrain_float(MIN(collective_in, _uspd_ceiling), 0.0f, 1.0f);
+        const uint32_t now_ms = AP_HAL::millis();
+        if (now_ms - _uspd_report_ms > 5000) {
+            _uspd_report_ms = now_ms;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rotor underspeed %.0f%%: collective ceiling", double(pct));
+        }
+    } else if (_uspd_engaged && pct > release) {
+        _uspd_engaged = false;
+    }
+    if (_uspd_engaged) {
+        _uspd_ceiling = constrain_float(_uspd_reference - _uspd_gain * (release - pct), 0.0f, 1.0f);
+    } else {
+        _uspd_ceiling = MIN(1.0f, _uspd_ceiling + USPD_RECOVERY_PER_S * dt);
+    }
+    return _uspd_ceiling;
+}
+
+// HUSP at 10 Hz while the limiter is engaged or its ceiling is coming back,
+// and once when it is back at full collective
+void AP_MotorsHeli_Single::underspeed_log(float coll_in, float coll_out)
+{
+#if HAL_LOGGING_ENABLED
+    const uint32_t now_ms = AP_HAL::millis();
+    const bool active = _uspd_engaged || _uspd_ceiling < 1.0f;
+    if (!active && !_uspd_was_active) {
+        return;
+    }
+    if (active && _uspd_was_active && now_ms - _uspd_log_ms < 100) {
+        return;
+    }
+    _uspd_was_active = active;
+    _uspd_log_ms = now_ms;
+// @LoggerMessage: HUSP
+// @Description: Helicopter rotor underspeed limiter (fork, Clearwater): while engaged or its ceiling is coming back, 10 Hz
+// @Field: TimeUS: Time since system startup
+// @Field: RPct: rotor speed, percent of H_RSC_GOV_RPM
+// @Field: Ceil: collective ceiling (0..1)
+// @Field: Ref: the collective it counts down from (asked for when it engaged)
+// @Field: CIn: collective asked for by the attitude/position controllers (0..1)
+// @Field: COut: collective out (0..1)
+// @Field: Eng: 1 while engaged
+    AP::logger().Write("HUSP", "TimeUS,RPct,Ceil,Ref,CIn,COut,Eng", "s%-----", "F000000", "QfffffB",
+                       AP_HAL::micros64(), _uspd_rotor_pct, _uspd_ceiling, _uspd_reference,
+                       coll_in, coll_out, uint8_t(_uspd_engaged));
+#endif
 }
 
 // HOSP at 10 Hz while the limiter is engaged, and once when it releases

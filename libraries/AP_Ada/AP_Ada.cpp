@@ -728,6 +728,7 @@ void AP_Ada::nav_update()
     // disarmed is on the ground, as EKF3 takes it (AP_DAL): the filter
     // then holds the accelerometer bias of the axes not near vertical
     cw_nav_set_armed(hal.util->get_soft_armed() ? 1 : 0);
+    nav_mag_cal();
     if (_nav_started) {
         nav_fuse();
     } else {
@@ -735,6 +736,26 @@ void AP_Ada::nav_update()
     }
     timed(_nav_time, "nav", AP_HAL::micros() - t0);
     nav_log();
+}
+
+// the filter fuses the compass as EKF3 does by EK3_MAG_CAL: the heading
+// only (on the ground, under the default 3) or the three axes
+void AP_Ada::nav_mag_cal()
+{
+    if (!_nav_mag_cal_looked_up) {
+        _nav_mag_cal_looked_up = true;
+        enum ap_var_type ptype;
+        AP_Param *p = AP_Param::find("EK3_MAG_CAL", &ptype);
+        _nav_mag_cal = (p != nullptr && ptype == AP_PARAM_INT8) ? (AP_Int8 *)p : nullptr;
+    }
+    if (_nav_mag_cal == nullptr) {
+        return;  // no EKF3: the filter keeps the three axes
+    }
+    bool ok = false;
+    cw_nav_set_mag_cal(uint8_t(_nav_mag_cal->get()), &ok);
+    if (!ok) {
+        _nav_rejects++;
+    }
 }
 
 // one Ada call of a part of nav_update, for ADNP
@@ -1078,15 +1099,18 @@ void AP_Ada::nav_log_stats()
 // @Field: EAX: AHRS accelerometer bias, body X
 // @Field: EAY: AHRS accelerometer bias, body Y
 // @Field: EAZ: AHRS accelerometer bias, body Z
-// @Field: Arm: 1 if the filter was told the vehicle is armed
 // @Field: Hld: accelerometer bias axes held on the ground, bit k for body axis k (0 X, 1 Y, 2 Z)
-        AP::logger().Write("ADNB", "TimeUS,GX,GY,GZ,AX,AY,AZ,EGX,EGY,EGZ,EAX,EAY,EAZ,Arm,Hld",
-                           "sEEEoooEEEooo--", "F000000000000--", "QffffffffffffBB",
+// @Field: St: 1 magnetometer three axes (else heading only), 2 in flight, 4 past the first climb, 8 armed (as the filter was told)
+// @Field: MRs: magnetometer yaw and field resets (on the change to three axes) since the start
+        // 16 fields, the most a log format takes: armed is a bit of St
+        AP::logger().Write("ADNB", "TimeUS,GX,GY,GZ,AX,AY,AZ,EGX,EGY,EGZ,EAX,EAY,EAZ,Hld,St,MRs",
+                           "sEEEoooEEEooo---", "F000000000000---", "QffffffffffffBBI",
                            AP_HAL::micros64(),
                            float(st.gyro_bias.x), float(st.gyro_bias.y), float(st.gyro_bias.z),
                            float(st.accel_bias.x), float(st.accel_bias.y), float(st.accel_bias.z),
                            egb.x, egb.y, egb.z, eab.x, eab.y, eab.z,
-                           st.armed, st.accel_bias_held);
+                           st.accel_bias_held, uint8_t(st.mag_state | (st.armed ? 8 : 0)),
+                           st.counters[CW_NAV_MAG_RESETS]);
     }
 #endif
     _nav_time.new_interval();

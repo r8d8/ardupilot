@@ -9,6 +9,7 @@
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/Semaphores.h>
 #include <AP_Math/AP_Math.h>
+#include <AP_Param/AP_Param.h>
 #include <stdint.h>
 #include <cw_fcs.h>
 
@@ -214,6 +215,11 @@ private:
     uint32_t _nav_gaps;     // IMU intervals dropped (longer than a predict step)
     uint32_t _nav_rejects;  // inputs the Ada filter refused
     bool _nav_started;
+    // EK3_MAG_CAL, found once: how EKF3 fuses the compass, followed by
+    // the filter (heading only or three axes)
+    AP_Int8 *_nav_mag_cal;
+    bool _nav_mag_cal_looked_up;
+    void nav_mag_cal();
     uint32_t _nav_log_ms;
     uint32_t _nav_time_log_ms;
     bool _nav_final_logged;

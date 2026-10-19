@@ -764,7 +764,12 @@ void AC_PosControl::NE_update_controller()
     const float accel_max_mss = angle_rad_to_accel_mss(angle_max_rad);
     // Save unbounded target for use in "limited" check (not unit-consistent with z!)
     _limit_vector_ned.xy() = _accel_target_ned_mss.xy();
-    if (!limit_accel_xy(_vel_desired_ned_ms.xy(), _accel_target_ned_mss.xy(), accel_max_mss)) {
+    // fork (Clearwater, HZ-38): with the collective or throttle at its upper
+    // limit (a heli's rotor underspeed ceiling) there is no thrust for more
+    // acceleration either, so the velocity integrator is held as when the
+    // lean angle limits
+    if (!limit_accel_xy(_vel_desired_ned_ms.xy(), _accel_target_ned_mss.xy(), accel_max_mss) &&
+        !_motors.limit.throttle_upper) {
         // _accel_target_ned_mss was not limited so we can zero the xy limit vector
         _limit_vector_ned.xy().zero();
     }
