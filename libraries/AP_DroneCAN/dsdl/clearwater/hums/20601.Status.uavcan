@@ -1,0 +1,38 @@
+#
+# HUMS node summary, 1 Hz.
+#
+# The node's DroneCAN NodeStatus stays health OK and mode OPERATIONAL in every case: ArduPilot blocks arming while
+# any node reports otherwise, and the HUMS is advisory only. Its own state is reported here instead.
+#
+
+uint32 node_time_ms         # the node's own clock (ms since boot, wraps after 49.7 days). The FC logs it beside its
+                            # TimeUS on receipt, which maps the node's SD snapshots onto the FC log to about the bus
+                            # latency (~1 ms); no GlobalTimeSync master exists in ArduPilot (fcs, 2026-10-21)
+
+uint8 MODE_STARTING   = 0
+uint8 MODE_LEARNING   = 1   # recording baselines; only fixed limits alert
+uint8 MODE_MONITORING = 2   # baselines set; trend alerts active
+uint8 MODE_DEGRADED   = 3   # a sensor channel lost; the indicators that need it are STALE or not VALID
+uint8 mode
+
+uint8 ALERT_NONE    = 0
+uint8 ALERT_INFO    = 1
+uint8 ALERT_CAUTION = 2
+uint8 ALERT_WARNING = 3
+uint8 alert_level           # the highest active
+uint8 alerts_active         # count of indicators over a limit
+
+uint16 sensors_present      # bit per sensor channel (hums/dronecan/README.md)
+uint16 sensors_healthy
+
+uint8 RECORD_SD_PRESENT = 1
+uint8 RECORD_RECORDING  = 2
+uint8 RECORD_SNAPSHOT   = 4 # a raw snapshot is being written
+uint8 RECORD_SD_FULL    = 8
+uint8 RECORD_SD_ERROR   = 16
+uint8 recording
+uint16 sd_free_mb
+
+float32 rotor_index_rpm     # from the node's own 1/rev index, independent of the HCU's (HZ-17 cross-check,
+                            # advisory); NaN without an index
+uint8 table_version

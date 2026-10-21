@@ -1,0 +1,17 @@
+#
+# One HUMS indicator value (nested in clearwater.hums.Indicators).
+# The meaning of each id - name, unit, source, averaging window - is in hums/dronecan/indicators.toml, whose
+# version the message carries. Advisory only: no receiver acts on these automatically.
+#
+
+uint16 id
+
+# Status bits
+uint8 STATUS_VALID    = 1   # the value is computed from current data
+uint8 STATUS_LEARNING = 2   # no baseline yet: recorded, no trend alert
+uint8 STATUS_CAUTION  = 4   # over its caution limit (inspect after landing)
+uint8 STATUS_WARNING  = 8   # over its warning limit (land as soon as practical, by the pilot's decision)
+uint8 STATUS_STALE    = 16  # an input is missing; the value is the last good one
+uint8 status
+
+float32 value               # in the table's unit; NaN when not available

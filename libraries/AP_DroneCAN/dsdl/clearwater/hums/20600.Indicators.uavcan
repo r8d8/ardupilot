@@ -1,0 +1,14 @@
+#
+# HUMS indicator values from the HUMS node (clearwater stage 1.0 onward).
+#
+# Sent by group: the fast group (in-flight indicators) every 1 s, the slow group (usage counters) every 10 s, each
+# split into messages of up to 8 indicators. Priority LOW or lower. The node computes the values on board from its own
+# sensors and the HCU's DroneCAN messages; raw waveforms stay on the node's SD card and never go on the bus.
+#
+# Data type ID 20600, in the clearwater programme's block 20600-20649 (design, 2026-10-21; HUMS 20600-20609), inside
+# the DroneCAN vendor message range [20000, 21000).
+#
+
+uint8 table_version         # version of hums/dronecan/indicators.toml the ids refer to
+uint8 sequence              # increments per message, wraps; a gap means a lost message
+Indicator[<=8] indicators

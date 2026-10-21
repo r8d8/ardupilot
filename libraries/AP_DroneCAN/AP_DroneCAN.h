@@ -73,6 +73,7 @@
 #if AP_DRONECAN_SERIAL_ENABLED
 #include "AP_DroneCAN_serial.h"
 #endif
+#include "AP_DroneCAN_HUMS.h"
 
 // fwd-declare callback classes
 class AP_DroneCAN_DNA_Server;
@@ -306,6 +307,11 @@ private:
 
 #if AP_DRONECAN_SERIAL_ENABLED
     AP_DroneCAN_Serial serial;
+#endif
+
+#if AP_DRONECAN_HUMS_ENABLED
+    // Clearwater HUMS node: log and forward its messages (after _driver_index)
+    AP_DroneCAN_HUMS hums{_driver_index};
 #endif
 
     Canard::Publisher<uavcan_protocol_NodeStatus> node_status{canard_iface};

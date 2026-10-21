@@ -565,6 +565,10 @@ void AP_DroneCAN::loop(void)
         serial.update();
 #endif
 
+#if AP_DRONECAN_HUMS_ENABLED
+        hums.update();
+#endif
+
 #if AP_RELAY_DRONECAN_ENABLED
         relay_hardpoint_send();
 #endif
@@ -1595,6 +1599,13 @@ bool AP_DroneCAN::get_FlexDebug(uint8_t node_id, uint16_t msg_id, uint32_t &time
  */
 void AP_DroneCAN::handle_debug(const CanardRxTransfer& transfer, const uavcan_protocol_debug_LogMessage& msg)
 {
+    // the text is not NUL-terminated when it fills all its bytes, and
+    // print_vprintf has no "%.*s": print a terminated copy of its length
+    char text[sizeof(msg.text.data) + 1];
+    const uint8_t text_len = MIN(msg.text.len, sizeof(msg.text.data));
+    memcpy(text, msg.text.data, text_len);
+    text[text_len] = 0;
+
 #if AP_HAVE_GCS_SEND_TEXT
     const auto log_level = AP::can().get_log_level();
     const auto msg_level = msg.level.value;
@@ -1624,7 +1635,7 @@ void AP_DroneCAN::handle_debug(const CanardRxTransfer& transfer, const uavcan_pr
         if (send_mavlink) {
             // when we send as MAVLink it also gets logged locally, so
             // we return to avoid a duplicate
-            GCS_SEND_TEXT(mavlink_level, "CAN[%u] %s", transfer.source_node_id, msg.text.data);
+            GCS_SEND_TEXT(mavlink_level, "CAN[%u] %s", transfer.source_node_id, text);
             return;
         }
     }
@@ -1632,7 +1643,7 @@ void AP_DroneCAN::handle_debug(const CanardRxTransfer& transfer, const uavcan_pr
 
 #if HAL_LOGGING_ENABLED
     // always log locally if we have logging enabled
-    AP::logger().Write_MessageF("CAN[%u] %s", transfer.source_node_id, msg.text.data);
+    AP::logger().Write_MessageF("CAN[%u] %s", transfer.source_node_id, text);
 #endif
 }
 
