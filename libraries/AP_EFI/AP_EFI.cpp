@@ -325,6 +325,29 @@ void AP_EFI::send_mavlink_status(mavlink_channel_t chan)
         ignition_voltage,
         fuel_pressure
         );
+
+    // Clearwater: EFI_STATUS has one cylinder; a second one's head and
+    // exhaust temperatures go as NAMED_VALUE_FLOAT in degC (NaN for a failed
+    // sensor), sent while the state has them (0 means no second cylinder)
+    const auto &cyl = state.cylinder_status;
+    const struct {
+        const char *name;
+        float kelvin;
+    } second[] {
+        { "CHT2", cyl.cylinder_head_temperature2 },
+        { "EGT2", cyl.exhaust_gas_temperature2 },
+    };
+    for (const auto &s : second) {
+        // NaN (a failed sensor) is sent; test it first, since comparing a
+        // NaN raises FE_INVALID (SITL traps it)
+        if ((!isnan(s.kelvin) && is_zero(s.kelvin)) || !HAVE_PAYLOAD_SPACE(chan, NAMED_VALUE_FLOAT)) {
+            continue;
+        }
+        // the message copies all 10 name bytes
+        char name[MAVLINK_MSG_NAMED_VALUE_FLOAT_FIELD_NAME_LEN] {};
+        strncpy(name, s.name, sizeof(name) - 1);
+        mavlink_msg_named_value_float_send(chan, AP_HAL::millis(), name, KELVIN_TO_C(s.kelvin));
+    }
 }
 
 // get a copy of state structure

@@ -136,15 +136,25 @@ void AP_EFI_DroneCAN::handle_status(const uavcan_equipment_ice_reciprocating_Sta
     // 1:1 for spark plug usage
     istate.spark_plug_usage = Spark_Plug_Usage(pkt.spark_plug_usage);
 
-    // assume max one cylinder status
+    auto &c = istate.cylinder_status;
     if (pkt.cylinder_status.len > 0) {
         const auto &cs = pkt.cylinder_status.data[0];
-        auto &c = istate.cylinder_status;
         c.ignition_timing_deg = cs.ignition_timing_deg;
         c.injection_time_ms = cs.injection_time_ms;
         c.cylinder_head_temperature = cs.cylinder_head_temperature;
         c.exhaust_gas_temperature = cs.exhaust_gas_temperature;
         c.lambda_coefficient = cs.lambda_coefficient;
+    }
+    // Clearwater: a twin's second head and exhaust come as a second
+    // cylinder entry (the HCU, HZ-43); the state keeps them as CHT2 / EGT2,
+    // NaN for a failed sensor, 0 when there is no second cylinder
+    if (pkt.cylinder_status.len > 1) {
+        const auto &cs2 = pkt.cylinder_status.data[1];
+        c.cylinder_head_temperature2 = cs2.cylinder_head_temperature;
+        c.exhaust_gas_temperature2 = cs2.exhaust_gas_temperature;
+    } else {
+        c.cylinder_head_temperature2 = 0;
+        c.exhaust_gas_temperature2 = 0;
     }
 
     // Required for healthy message
