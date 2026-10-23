@@ -8,6 +8,7 @@
 #include <AP_CANManager/AP_CANManager.h>
 #include <AP_DroneCAN/AP_DroneCAN.h>
 #include <AP_BoardConfig/AP_BoardConfig.h>
+#include <AP_Math/AP_Math.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -18,6 +19,14 @@ AP_EFI_DroneCAN::AP_EFI_DroneCAN(AP_EFI &_frontend) :
     AP_EFI_Backend(_frontend)
 {
     driver = this;
+    // Clearwater: until the first ICE status the temperatures are unknown,
+    // not 0 K (ECYL logged -273.15 at boot, HZ-43)
+    auto &c = internal_state.cylinder_status;
+    c.cylinder_head_temperature = NaNf;
+    c.cylinder_head_temperature2 = NaNf;
+    c.exhaust_gas_temperature = NaNf;
+    c.exhaust_gas_temperature2 = NaNf;
+    copy_to_frontend();
 }
 
 // links the DroneCAN message to this backend
