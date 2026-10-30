@@ -239,6 +239,14 @@ const AP_Param::GroupInfo AP_MotorsHeli_Single::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("USPD_GAIN", 29, AP_MotorsHeli_Single, _uspd_gain, 0.05f),
 
+    // @Param: OSPD_MAX
+    // @DisplayName: Rotor overspeed limiter, highest floor
+    // @Description: The highest collective (0 to 1, H_COL_MIN to H_COL_MAX) the rotor overspeed limiter's floor may ask for. In a retreating-blade stall the nose comes up, the rotor speeds up, and an uncapped floor adds up to full collective at the top of the cycle, which enlarges it. Too low a cap lets the rotor overspeed in a steep descent. 1: no cap.
+    // @Range: 0.1 1
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("OSPD_MAX", 30, AP_MotorsHeli_Single, _ospd_max, 1.0f),
+
     AP_GROUPEND
 };
 
@@ -784,7 +792,7 @@ float AP_MotorsHeli_Single::overspeed_collective_floor()
     } else if (_ospd_engaged && pct < release) {
         _ospd_engaged = false;
     }
-    _ospd_floor = _ospd_engaged ? constrain_float(_ospd_gain * (pct - release), 0.0f, 1.0f) : 0.0f;
+    _ospd_floor = _ospd_engaged ? constrain_float(_ospd_gain * (pct - release), 0.0f, _ospd_max) : 0.0f;
     return _ospd_floor;
 }
 

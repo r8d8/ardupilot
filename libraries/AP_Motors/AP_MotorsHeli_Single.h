@@ -153,6 +153,7 @@ protected:
     AP_Float        _ospd_pct;                  // engage above this % of H_RSC_GOV_RPM, 0: off
     AP_Float        _ospd_release_pct;          // release below this %; the floor counts from it
     AP_Float        _ospd_gain;                 // collective (0..1) per % above the release
+    AP_Float        _ospd_max;                  // the floor's highest collective (0..1)
     bool            _ospd_engaged;
     bool            _ospd_was_engaged;          // at the last HOSP record
     float           _ospd_floor;                // the floor now, 0..1
