@@ -318,6 +318,8 @@ bool ModeGuided::is_taking_off() const
 bool ModeGuided::set_speed_NE_ms(float speed_ne_ms)
 {
     // initialise horizontal speed, acceleration
+    // fork (Clearwater, HZ-40): WP_SPD_CAP holds a GCS speed command to the live WP_SPD too
+    speed_ne_ms = wp_nav->capped_speed_NE_ms(speed_ne_ms);
     pos_control->NE_set_max_speed_accel_m(speed_ne_ms, wp_nav->get_wp_acceleration_mss());
     pos_control->NE_set_correction_speed_accel_m(speed_ne_ms, wp_nav->get_wp_acceleration_mss());
     return true;

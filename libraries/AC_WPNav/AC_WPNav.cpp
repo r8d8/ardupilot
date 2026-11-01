@@ -109,6 +109,13 @@ const AP_Param::GroupInfo AC_WPNav::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("ACC_CNR", 20, AC_WPNav, _wp_accel_c_mss, 0.0),
 
+    // @Param: SPD_CAP
+    // @DisplayName: Waypoint speed commands capped at WP_SPD
+    // @Description: Fork (Clearwater, HZ-40). When on, the live WP_SPD is the ceiling for every commanded horizontal speed: a mission's DO_CHANGE_SPEED (latched or not), a GCS or script speed command, RTL_SPEED_MS. It is checked at every update and the speed asked for is kept, so it comes back when WP_SPD rises. Off: stock.
+    // @Values: 0:Off,1:On
+    // @User: Advanced
+    AP_GROUPINFO("SPD_CAP", 21, AC_WPNav, _wp_speed_cap, 0),
+
     AP_GROUPEND
 };
 
@@ -226,7 +233,8 @@ void AC_WPNav::wp_and_spline_init_m(float speed_ms, Vector3p stopping_point_ned_
     // determine desired waypoint speed; fallback to default if not provided
     _check_wp_speed_change = !is_positive(speed_ms);
     _wp_desired_speed_ne_ms = is_positive(speed_ms) ? speed_ms : get_default_speed_NE_ms();
-    _wp_desired_speed_ne_ms = MAX(_wp_desired_speed_ne_ms, WP_SPD_MIN);
+    _wp_requested_speed_ne_ms = MAX(_wp_desired_speed_ne_ms, WP_SPD_MIN);
+    _wp_desired_speed_ne_ms = capped_speed_NE_ms(_wp_requested_speed_ne_ms);
 
     // initialise position controller speed and acceleration
     _pos_control.NE_set_max_speed_accel_m(_wp_desired_speed_ne_ms, get_wp_acceleration_mss());
@@ -275,6 +283,24 @@ void AC_WPNav::set_speed_NE_cms(float speed_cms)
 // Sets the target horizontal speed in m/s during waypoint navigation.
 // Also updates internal velocity offsets and path shaping limits.
 void AC_WPNav::set_speed_NE_ms(float speed_ms)
+{
+    if (speed_ms >= WP_SPD_MIN && is_positive(_wp_desired_speed_ne_ms)) {
+        // kept, so the speed comes back when WP_SPD rises
+        _wp_requested_speed_ne_ms = speed_ms;
+        apply_speed_NE_ms(capped_speed_NE_ms(speed_ms));
+    }
+}
+
+// fork (Clearwater, HZ-40): with WP_SPD_CAP on, at most the live WP_SPD
+float AC_WPNav::capped_speed_NE_ms(float speed_ms) const
+{
+    if (_wp_speed_cap <= 0) {
+        return speed_ms;
+    }
+    return MIN(speed_ms, MAX(_wp_speed_ms.get(), WP_SPD_MIN));
+}
+
+void AC_WPNav::apply_speed_NE_ms(float speed_ms)
 {
     // validate input: speed must be above minimum and current desired speed must be non-zero
     if (speed_ms >= WP_SPD_MIN && is_positive(_wp_desired_speed_ne_ms)) {
@@ -383,7 +409,7 @@ bool AC_WPNav::set_wp_destination_NED_m(const Vector3p& destination_ned_m, bool 
 {
     // re-initialise if previous destination has been interrupted
     if (!is_active() || !_flags.reached_destination) {
-        wp_and_spline_init_m(_wp_desired_speed_ne_ms);
+        wp_and_spline_init_m(_wp_requested_speed_ne_ms);
     }
 
     _scurve_prev_leg.init();
@@ -692,6 +718,14 @@ bool AC_WPNav::update_wpnav()
             _last_wp_speed_ms = _wp_speed_ms;
         }
     }
+    // fork (Clearwater, HZ-40): WP_SPD_CAP follows the live WP_SPD down and back up,
+    // also with the speed latched (_check_wp_speed_change false)
+    if (_wp_speed_cap > 0) {
+        const float capped_ms = capped_speed_NE_ms(_wp_requested_speed_ne_ms);
+        if (!is_equal(capped_ms, _wp_desired_speed_ne_ms)) {
+            apply_speed_NE_ms(capped_ms);
+        }
+    }
     // check for climb and descent speed updates
     if (!is_equal(_wp_speed_up_ms.get(), _last_wp_speed_up_ms)) {
         set_speed_up_ms(get_default_speed_up_ms());
@@ -852,7 +886,7 @@ bool AC_WPNav::set_spline_destination_NED_m(const Vector3p& destination_ned_m, b
 {
     // re-initialise path state if previous destination was not completed or controller inactive
     if (!is_active() || !_flags.reached_destination) {
-        wp_and_spline_init_m(_wp_desired_speed_ne_ms);
+        wp_and_spline_init_m(_wp_requested_speed_ne_ms);
     }
 
     // update spline calculators speeds and accelerations

@@ -76,6 +76,9 @@ public:
     // Also updates internal velocity offsets and path shaping limits.
     void set_speed_NE_ms(float speed_ms);
 
+    // fork (Clearwater, HZ-40): a commanded horizontal speed with WP_SPD_CAP applied.
+    float capped_speed_NE_ms(float speed_ms) const;
+
     // Pauses progression along the waypoint track.
     void set_pause() { _paused = true; }
 
@@ -362,6 +365,11 @@ protected:
     AP_Float    _wp_accel_z_mss;    // maximum vertical acceleration in m/s² used during climb or descent
     AP_Float    _wp_jerk_msss;      // maximum jerk in m/s³ used for s-curve trajectory shaping
     AP_Float    _terrain_margin_m;  // minimum altitude margin in meters when terrain following is active
+    AP_Int8     _wp_speed_cap;      // fork (Clearwater, HZ-40): WP_SPD_CAP, the live WP_SPD caps every commanded speed
+
+    // sets the speed the waypoint controller flies, after the cap (set_speed_NE_ms's former body)
+    void apply_speed_NE_ms(float speed_ms);
+    float _wp_requested_speed_ne_ms; // the speed last asked for, before WP_SPD_CAP
 
     // WP_SPD param change checker
     bool _check_wp_speed_change;    // true if WP_SPD should be monitored for changes during flight
