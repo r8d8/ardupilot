@@ -9,6 +9,7 @@
 #include "AP_MotorsHeli_RSC.h"
 #include "AP_MotorsHeli_Swash.h"
 #include "AP_Motors_Thrust_Linearization.h"
+#include <AP_Ada/AP_Ada_config.h>
 
 // rsc and extgyro function output channels.
 #define AP_MOTORS_HELI_SINGLE_EXTGYRO                          CH_7
@@ -178,6 +179,17 @@ protected:
     uint32_t        _uspd_report_ms;
     float underspeed_collective_ceiling(float collective_in);
     void underspeed_log(float coll_in, float coll_out);
+
+#if AP_ADA_ENABLED
+    // what the two limiters read in this update, for the Ada shadow (ADAL)
+    struct {
+        float rotor_pct;
+        float dt;                               // the underspeed limiter's, s
+        bool ospd_active;                       // on, in powered flight, a rotor speed
+        bool uspd_active;
+    } _limit_in;
+    void rotor_limit_shadow(float coll_in, float coll_out, bool lowered, bool capped);
+#endif
 
     bool            _acro_tail = false;
 };

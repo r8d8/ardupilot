@@ -36,6 +36,11 @@
 #define AP_ADA_RATE_BUDGET_US 50
 #endif
 
+// one update of the two rotor-speed limiters
+#ifndef AP_ADA_LIMIT_BUDGET_US
+#define AP_ADA_LIMIT_BUDGET_US 50
+#endif
+
 // the navigation filter: one predict (21-state covariance) and the
 // fusions that have new data, at AP_ADA_NAV_RATE_HZ
 #ifndef AP_ADA_NAV_BUDGET_US

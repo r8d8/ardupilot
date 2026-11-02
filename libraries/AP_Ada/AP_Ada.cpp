@@ -166,6 +166,29 @@ void AP_Ada::update()
                        _rate_stats.max_ff_err, _rate_time.sum_us(), _rate_time.max_us(),
                        _rate_time.percentile_us(99), _rate_time.overruns(),
                        uint8_t(_rate_time.tripped()));
+
+// @LoggerMessage: ADAL
+// @Description: Ada/SPARK rotor-speed limiters in shadow, compared with AP_MotorsHeli_Single's overspeed floor and underspeed ceiling update by update
+// @Field: TimeUS: Time since system startup
+// @Field: N: updates compared in this interval
+// @Field: Rej: inputs the Ada limiters refused
+// @Field: Mis: updates whose collective, flags or limiter state differ (beyond 1e-6 for the values)
+// @Field: Err: largest collective, floor, ceiling or reference difference in this interval
+// @Field: OE: updates with the overspeed floor engaged
+// @Field: UE: updates with the underspeed ceiling engaged
+// @Field: CW: updates with the overspeed floor above the underspeed ceiling, so the ceiling wins (HZ-53)
+// @Field: TT: time spent in the Ada limiters in this interval
+// @Field: TMx: longest single update in this interval
+// @Field: TP: 99th percentile of the update times in this interval
+// @Field: Ovr: updates over the time budget (AP_ADA_LIMIT_BUDGET_US) in this interval
+// @Field: Off: 1 once the limiter shadow is switched off after AP_ADA_TRIP_OVERRUNS overruns since boot
+    AP::logger().Write("ADAL", "TimeUS,N,Rej,Mis,Err,OE,UE,CW,TT,TMx,TP,Ovr,Off",
+                       "s-------sss--", "F-------FFF--", "QIIIfIIIIIIIB",
+                       AP_HAL::micros64(), _limit.checks, _limit.rejects, _limit.mismatch,
+                       _limit.max_err, _limit.ospd, _limit.uspd, _limit.ceiling_wins,
+                       _limit_time.sum_us(), _limit_time.max_us(),
+                       _limit_time.percentile_us(99), _limit_time.overruns(),
+                       uint8_t(_limit_time.tripped()));
 #endif
 
     crsf_report();
@@ -179,6 +202,8 @@ void AP_Ada::update()
     _swash_time.new_interval();
     _rate_stats = {};
     _rate_time.new_interval();
+    _limit = {};
+    _limit_time.new_interval();
 }
 
 // the CRSF snapshot from the RC input thread: log it if new, send what it
@@ -658,6 +683,81 @@ void AP_Ada::rate_reset_filter(uint8_t axis)
     if (_healthy && axis < RATE_AXES && !_rate_time.tripped()) {
         cw_rate_reset_filter(axis);
     }
+}
+
+// ---------------------------------------------------------------------------
+// rotor-speed limiter shadow: CW_Rotor_Limit against AP_MotorsHeli_Single
+
+// both sides compute the same single-precision expressions; the margin is
+// for a compiler that fuses a multiply-add the other does not
+static const float LIMIT_TOLERANCE = 1.0e-6f;
+
+// the Ada state from ArduPilot's, after an update not compared
+void AP_Ada::limit_resync(const cw_rotor_limit_state_t &state)
+{
+    bool ok = false;
+    cw_rotor_limit_set_state(&state, &ok);
+    _limit_in_sync = ok;
+    if (!ok) {
+        _limit.rejects++;
+    }
+}
+
+void AP_Ada::rotor_limit_check(const cw_rotor_limit_config_t &config, bool ospd_active,
+                               bool uspd_active, float rotor_pct, float coll_in, float dt,
+                               float coll_out, bool lowered, bool capped,
+                               const cw_rotor_limit_state_t &state)
+{
+    if (!_healthy || _limit_time.tripped()) {
+        return;
+    }
+    if (!_limit_in_sync) {
+        // ArduPilot has just updated: the next update starts from its state
+        limit_resync(state);
+        return;
+    }
+
+    // timed: what the shadow adds to every motor output
+    const uint32_t t0 = AP_HAL::micros();
+    cw_rotor_limit_out_t out;
+    bool ok = false;
+    cw_rotor_limit_update(&config, ospd_active, uspd_active, rotor_pct, coll_in, dt, &out, &ok);
+    cw_rotor_limit_state_t ada;
+    cw_rotor_limit_state(&ada);
+    timed(_limit_time, "limiter", AP_HAL::micros() - t0);
+    if (!ok) {
+        _limit.rejects++;
+        _limit_in_sync = false;
+        return;
+    }
+    _limit.checks++;
+    _limit.ospd += state.ospd_engaged;
+    _limit.uspd += state.uspd_engaged;
+    if (state.ospd_floor > state.uspd_ceiling) {
+        _limit.ceiling_wins++;
+    }
+
+    const float err = MAX(MAX(fabsf(out.collective - coll_out), fabsf(ada.ospd_floor - state.ospd_floor)),
+                          MAX(fabsf(ada.uspd_ceiling - state.uspd_ceiling),
+                              fabsf(ada.uspd_reference - state.uspd_reference)));
+    _limit.max_err = MAX(_limit.max_err, err);
+    const bool flags_differ = bool(out.lower) != lowered || bool(out.upper) != capped ||
+                              ada.ospd_engaged != state.ospd_engaged ||
+                              ada.uspd_engaged != state.uspd_engaged ||
+                              ada.uspd_at_speed != state.uspd_at_speed;
+    if (err <= LIMIT_TOLERANCE && !flags_differ) {
+        return;
+    }
+    _limit.mismatch++;
+    if (!_limit_mismatch_reported) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Ada: limiter differs: coll %.5f vs %.5f, eng %u%u vs %u%u",
+                      double(out.collective), double(coll_out),
+                      unsigned(ada.ospd_engaged), unsigned(ada.uspd_engaged),
+                      unsigned(state.ospd_engaged), unsigned(state.uspd_engaged));
+        _limit_mismatch_reported = true;
+    }
+    // back in step for the next update
+    limit_resync(state);
 }
 
 // ---------------------------------------------------------------------------

@@ -27,7 +27,9 @@
   - ADAC: the CRSF parser against AP_RCProtocol_CRSF, frame by frame
   - ADAR: the heli rate controllers against AC_PID / AC_HELI_PID, call by
     call
-  The UBX, swashplate, navigation and CRSF calls are timed
+  - ADAL: the rotor-speed limiters against AP_MotorsHeli_Single, update by
+    update
+  The UBX, swashplate, navigation, CRSF, rate and limiter calls are timed
   (AP_Ada_CallTimer); a
   shadow whose calls overrun their budget too often is switched off (HZ-19,
   HZ-20; the same for the navigation shadow).
@@ -90,6 +92,15 @@ public:
     void rate_set_integrator(uint8_t axis, float integrator);
     void rate_relax_integrator(uint8_t axis, float integrator, float dt, float tc);
     void rate_reset_filter(uint8_t axis);
+
+    // rotor-speed limiter shadow, called by AP_MotorsHeli_Single after its
+    // overspeed floor and underspeed ceiling, every update: what they read
+    // (ospd_active, uspd_active: past their guards), the collective before
+    // and after them, whether each acted, and their state after
+    void rotor_limit_check(const cw_rotor_limit_config_t &config, bool ospd_active,
+                           bool uspd_active, float rotor_pct, float coll_in, float dt,
+                           float coll_out, bool lowered, bool capped,
+                           const cw_rotor_limit_state_t &state);
 
     // called by AP_VisualOdom_MAV with every pose, rotated and corrected
     // as the EKF gets it; consumed: the EKF was given it (quality)
@@ -191,6 +202,23 @@ private:
     bool _rate_mismatch_reported;
     AP_Ada_CallTimer _rate_time{AP_ADA_RATE_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
     void rate_resync(uint8_t axis, float integrator);
+
+    // rotor-speed limiter shadow: false until the Ada state is set from
+    // ArduPilot's, and after a refused call
+    bool _limit_in_sync;
+    // since the last ADAL log message
+    struct {
+        uint32_t checks;           // updates compared
+        uint32_t rejects;          // inputs the Ada limiters refused
+        uint32_t mismatch;         // updates with an output or state differing
+        uint32_t ospd;             // updates with the overspeed floor engaged
+        uint32_t uspd;             // updates with the underspeed ceiling engaged
+        uint32_t ceiling_wins;     // updates with the floor above the ceiling (HZ-53)
+        float max_err;             // largest collective, floor, ceiling or reference difference
+    } _limit;
+    bool _limit_mismatch_reported;
+    AP_Ada_CallTimer _limit_time{AP_ADA_LIMIT_BUDGET_US, AP_ADA_TRIP_OVERRUNS};
+    void limit_resync(const cw_rotor_limit_state_t &state);
 
     // navigation shadow
     struct {

@@ -19,6 +19,7 @@
 #include "AP_MotorsHeli_Single.h"
 #include <GCS_MAVLink/GCS.h>
 #include <AP_Logger/AP_Logger.h>
+#include <AP_Ada/AP_Ada.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -466,6 +467,10 @@ void AP_MotorsHeli_Single::move_actuators(float roll_out, float pitch_out, float
         limit.throttle_upper = true;
     }
     underspeed_log(coll_before_uspd, collective_out);
+#if AP_ADA_ENABLED
+    rotor_limit_shadow(coll_before_ospd, collective_out, coll_before_ospd < ospd_floor,
+                       coll_before_uspd > uspd_ceiling);
+#endif
 
     // updates below land min collective flag
     _heliflags.below_land_min_coll = !is_positive(collective_out - _collective_land_min_pct);
@@ -764,10 +769,17 @@ void AP_MotorsHeli_Single::Log_Write(void)
 // act: off (H_OSPD_PCT 0), not in powered flight, or no rotor speed
 float AP_MotorsHeli_Single::overspeed_collective_floor()
 {
-    float pct;
+    float pct = 0;
     const bool powered = armed() && get_interlock() && !_main_rotor.in_autorotation() &&
                          !_heliflags.land_complete;
-    if (!is_positive(_ospd_pct.get()) || !powered || !_main_rotor.get_rotor_speed_pct(pct)) {
+    const bool active = is_positive(_ospd_pct.get()) && powered && _main_rotor.get_rotor_speed_pct(pct);
+#if AP_ADA_ENABLED
+    _limit_in.ospd_active = active;
+    if (active) {
+        _limit_in.rotor_pct = pct;
+    }
+#endif
+    if (!active) {
         _ospd_engaged = false;
         _ospd_floor = 0;
         return 0;
@@ -802,10 +814,18 @@ float AP_MotorsHeli_Single::underspeed_collective_ceiling(float collective_in)
     const uint32_t now_us = AP_HAL::micros();
     const float dt = constrain_float((now_us - _uspd_update_us) * 1.0e-6f, 0.0f, 0.1f);
     _uspd_update_us = now_us;
-    float pct;
+    float pct = 0;
     const bool powered = armed() && get_interlock() && !_main_rotor.in_autorotation() &&
                          !_heliflags.land_complete && _heliflags.rotor_runup_complete;
-    if (!is_positive(_uspd_pct.get()) || !powered || !_main_rotor.get_rotor_speed_pct(pct)) {
+    const bool active = is_positive(_uspd_pct.get()) && powered && _main_rotor.get_rotor_speed_pct(pct);
+#if AP_ADA_ENABLED
+    _limit_in.uspd_active = active;
+    _limit_in.dt = dt;
+    if (active) {
+        _limit_in.rotor_pct = pct;
+    }
+#endif
+    if (!active) {
         _uspd_engaged = false;
         _uspd_at_speed = false;
         _uspd_ceiling = 1.0f;
@@ -839,6 +859,31 @@ float AP_MotorsHeli_Single::underspeed_collective_ceiling(float collective_in)
     }
     return _uspd_ceiling;
 }
+
+#if AP_ADA_ENABLED
+// the Ada/SPARK limiters (fcs/src/limit) in shadow: the same inputs as the
+// two limiters above, their collective, flags and state compared (ADAL).
+// coll_in, coll_out: the collective before and after them; lowered, capped:
+// whether the floor raised it and the ceiling cut it
+void AP_MotorsHeli_Single::rotor_limit_shadow(float coll_in, float coll_out, bool lowered, bool capped)
+{
+    AP_Ada *ada = AP_Ada::get_singleton();
+    if (ada == nullptr) {
+        return;
+    }
+    const cw_rotor_limit_config_t config {
+        _ospd_pct.get(), _ospd_release_pct.get(), _ospd_gain.get(),
+        _uspd_pct.get(), _uspd_release_pct.get(), _uspd_gain.get(),
+    };
+    const cw_rotor_limit_state_t state {
+        _ospd_engaged, _uspd_engaged, _uspd_at_speed, 0,
+        _ospd_floor, _uspd_ceiling, _uspd_reference,
+    };
+    ada->rotor_limit_check(config, _limit_in.ospd_active, _limit_in.uspd_active,
+                           _limit_in.rotor_pct, coll_in, _limit_in.dt,
+                           coll_out, lowered, capped, state);
+}
+#endif
 
 // HUSP at 10 Hz while the limiter is engaged or its ceiling is coming back,
 // and once when it is back at full collective
