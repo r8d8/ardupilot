@@ -4264,10 +4264,35 @@ MAV_RESULT GCS_MAVLINK::handle_command_mag_cal(const mavlink_command_int_t &pack
 
 #if AP_MAVLINKCAN_ENABLED
 /*
+  fork (Clearwater, HZ-60, HZ-59): a GCS's CAN frames go onto the bus
+  unchecked, and its filters and forwarding load the link; all three are
+  refused while armed (the setup tools work on the ground). A request to
+  stop forwarding is still taken; forwarding started before arming stops
+  5 s after its last refresh. A notice at most every 5 s.
+ */
+static bool can_refused_armed()
+{
+    if (!hal.util->get_soft_armed()) {
+        return false;
+    }
+    static uint32_t last_ms;
+    const uint32_t now_ms = AP_HAL::millis();
+    if (last_ms == 0 || now_ms - last_ms > 5000) {
+        last_ms = now_ms;
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "CAN from MAVLink refused while armed");
+    }
+    return true;
+}
+
+/*
   handle MAV_CMD_CAN_FORWARD
  */
 MAV_RESULT GCS_MAVLINK::handle_can_forward(const mavlink_command_int_t &packet, const mavlink_message_t &msg)
 {
+    // param1 0: stop forwarding
+    if (int8_t(packet.param1) != 0 && can_refused_armed()) {
+        return MAV_RESULT_DENIED;
+    }
     return AP_MAVLinkCAN::handle_can_forward(chan, packet, msg) ? MAV_RESULT_ACCEPTED : MAV_RESULT_FAILED;
 }
 
@@ -4276,6 +4301,9 @@ MAV_RESULT GCS_MAVLINK::handle_can_forward(const mavlink_command_int_t &packet, 
  */
 void GCS_MAVLINK::handle_can_frame(const mavlink_message_t &msg) const
 {
+    if (can_refused_armed()) {
+        return;
+    }
     AP_MAVLinkCAN::handle_can_frame(msg);
 }
 #endif  // AP_MAVLINKCAN_ENABLED
@@ -4648,7 +4676,9 @@ void GCS_MAVLINK::handle_message(const mavlink_message_t &msg)
 
 #if AP_MAVLINKCAN_ENABLED
     case MAVLINK_MSG_ID_CAN_FILTER_MODIFY:
-        AP_MAVLinkCAN::handle_can_filter_modify(msg);
+        if (!can_refused_armed()) {
+            AP_MAVLinkCAN::handle_can_filter_modify(msg);
+        }
         break;
 #endif  // AP_MAVLINKCAN_ENABLED
 
