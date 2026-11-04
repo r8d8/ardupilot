@@ -337,3 +337,8 @@ define AC_PRECLAND_ENABLED 0
 # EOD_AROT_ALT and lets ArduPilot fly the entry and glide; ArduCopter's
 # config.h builds it only for SITL heli (bench H7, 2026-10-15)
 define MODE_AUTOROTATE_ENABLED 1
+
+# rcin thread stack (default 1024): the bench's soaks read 536 / 440 / 416 /
+# 496 / 368 B free of 1456 with no change to that thread's code (a1ee59c,
+# 2026-11-04), near the 64 B check; 512 B more RAM, no flash
+define RCIN_THD_WA_SIZE 1536
