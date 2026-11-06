@@ -332,6 +332,10 @@ define AP_FETTEC_ONEWIRE_ENABLED 0
 define AP_VIDEOTX_ENABLED 0
 define AC_PRECLAND_ENABLED 0
 
+# SLCAN passthrough: no area uses it (HZ-60, 2026-11-06), and its
+# CAN_SLCAN_SERNUM route opens a port with no arming check
+define AP_CAN_SLCAN_ENABLED 0
+
 # Clearwater: features the aircraft need that hardware builds leave out.
 # AUTOROTATE (mode 26): lua/heli_engine_out.lua switches to it above
 # EOD_AROT_ALT and lets ArduPilot fly the entry and glide; ArduCopter's
